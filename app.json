@@ -22,6 +22,7 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "scheme": "calypso"
   }
 }
