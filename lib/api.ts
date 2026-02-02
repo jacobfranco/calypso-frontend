@@ -14,6 +14,56 @@ export type Account = {
   created_at?: string;
 };
 
+export type Importance = 'NOT_IMPORTANT' | 'PREFERENCE' | 'DEALBREAKER';
+
+export type ModeFilter = {
+  self?: string;
+};
+
+export type OneToManyFilter = {
+  self?: string;
+  seeking?: string[];
+  importance?: Importance;
+};
+
+export type RangeFilter = {
+  self?: number;
+  min?: number;
+  max?: number;
+  importance?: Importance;
+};
+
+export type LocationFilter = {
+  lat?: number;
+  lon?: number;
+  radiusKm?: number;
+  importance?: Importance;
+};
+
+export type TagPreference = {
+  tag: string;
+  importance: Importance;
+};
+
+export type ManyToManyFilter = {
+  self?: string[];
+  preferences?: TagPreference[];
+};
+
+export type Filters = {
+  accountId?: number;
+  relationshipMode?: ModeFilter;
+  gender?: OneToManyFilter;
+  age?: RangeFilter;
+  location?: LocationFilter;
+  religion?: OneToManyFilter;
+  politics?: OneToManyFilter;
+  lifestyle?: ManyToManyFilter;
+  interests?: ManyToManyFilter;
+};
+
+export type TagsResponse = Record<string, string[]>;
+
 type TokenResponse = {
   access_token: string;
   token_type: string;
@@ -154,4 +204,62 @@ function extractErrorMessage(payload: unknown, status: number): string {
     }
   }
   return `Request failed (${status})`;
+}
+
+export async function fetchFilters(accountId: string, token: string): Promise<Filters | null> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/filters`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (res.status === 404) {
+    return null;
+  }
+
+  const json = (await res.json()) as { filters?: Filters } | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if ('filters' in json && json.filters) {
+    return json.filters;
+  }
+
+  return null;
+}
+
+export async function postFilters(
+  accountId: string,
+  token: string,
+  filters: Filters
+): Promise<Filters> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/filters`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(filters),
+  });
+
+  const json = (await res.json()) as { filters?: Filters } | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if ('filters' in json && json.filters) {
+    return json.filters;
+  }
+
+  throw new Error('Unexpected response from /api/accounts/{id}/filters');
+}
+
+export async function fetchTags(kind: string): Promise<TagsResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/meta/tags/${kind}`);
+  const json = (await res.json()) as TagsResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  return json as TagsResponse;
 }

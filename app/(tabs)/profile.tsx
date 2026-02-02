@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -6,30 +6,50 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Link } from 'expo-router';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import {
-  Account,
-  clearToken,
-  createAccount,
-  fetchMe,
-  getStoredToken,
-  loginWithPassword,
-  revokeToken,
-  storeToken,
-} from '@/lib/api';
+import { useAuth } from '@/lib/auth';
+import { useThemeColor } from '@/hooks/use-theme-color';
 
 type Mode = 'login' | 'signup';
 
 export default function ProfileScreen() {
-  const [account, setAccount] = useState<Account | null>(null);
-  const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const { account, status, error, login, signup, logout } = useAuth();
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
+  const borderColor = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.12)', dark: 'rgba(255, 255, 255, 0.18)' },
+    'icon'
+  );
+  const cardBorder = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.08)', dark: 'rgba(255, 255, 255, 0.12)' },
+    'icon'
+  );
+  const cardBg = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.02)', dark: 'rgba(255, 255, 255, 0.04)' },
+    'background'
+  );
+  const inputBg = useThemeColor(
+    { light: 'rgba(255, 255, 255, 0.85)', dark: 'rgba(255, 255, 255, 0.08)' },
+    'background'
+  );
+  const inputText = useThemeColor({}, 'text');
+  const placeholderColor = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.4)', dark: 'rgba(255, 255, 255, 0.4)' },
+    'text'
+  );
+  const muted = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.6)', dark: 'rgba(255, 255, 255, 0.6)' },
+    'text'
+  );
+  const primaryBg = useThemeColor({ light: '#111', dark: '#f1f1f1' }, 'text');
+  const primaryText = useThemeColor({ light: '#fff', dark: '#111' }, 'text');
 
   const canSubmit = useMemo(() => {
     if (mode === 'signup') {
@@ -38,95 +58,30 @@ export default function ProfileScreen() {
     return email.trim().length > 0 && password.length > 0;
   }, [email, mode, name, password]);
 
-  useEffect(() => {
-    let mounted = true;
-
-    const loadAccount = async () => {
-      setStatus('loading');
-      setErrorMessage(null);
-
-      try {
-        const token = await getStoredToken();
-        if (!token) {
-          if (mounted) {
-            setStatus('idle');
-          }
-          return;
-        }
-
-        const me = await fetchMe(token);
-        if (mounted) {
-          setAccount(me);
-          setStatus('idle');
-        }
-      } catch (error) {
-        await clearToken();
-        if (mounted) {
-          setAccount(null);
-          setStatus('idle');
-          setErrorMessage(error instanceof Error ? error.message : 'Failed to load profile');
-        }
-      }
-    };
-
-    loadAccount();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
   const handleLogin = async () => {
     if (!canSubmit) return;
-    setStatus('loading');
     setErrorMessage(null);
 
     try {
-      const token = await loginWithPassword(email.trim(), password);
-      await storeToken(token.access_token);
-      const me = await fetchMe(token.access_token);
-      setAccount(me);
-      setStatus('idle');
+      await login(email.trim(), password);
     } catch (error) {
-      setAccount(null);
-      setStatus('error');
       setErrorMessage(error instanceof Error ? error.message : 'Login failed');
     }
   };
 
   const handleSignup = async () => {
     if (!canSubmit) return;
-    setStatus('loading');
     setErrorMessage(null);
 
     try {
-      const token = await createAccount({
-        name: name.trim(),
-        email: email.trim(),
-        password,
-      });
-      await storeToken(token.access_token);
-      const me = await fetchMe(token.access_token);
-      setAccount(me);
-      setStatus('idle');
+      await signup(name.trim(), email.trim(), password);
     } catch (error) {
-      setAccount(null);
-      setStatus('error');
       setErrorMessage(error instanceof Error ? error.message : 'Signup failed');
     }
   };
 
   const handleLogout = async () => {
-    const token = await getStoredToken();
-    if (token) {
-      try {
-        await revokeToken(token);
-      } catch (error) {
-        // Ignore revoke failures for local logout.
-      }
-    }
-    await clearToken();
-    setAccount(null);
-    setErrorMessage(null);
+    await logout();
   };
 
   const toggleMode = () => {
@@ -140,8 +95,11 @@ export default function ProfileScreen() {
         <View style={styles.headerRow}>
           <ThemedText type="title">Your profile</ThemedText>
           {account ? (
-            <Pressable onPress={handleLogout} style={styles.headerLogout}>
-              <ThemedText style={styles.headerLogoutText}>Log out</ThemedText>
+            <Pressable
+              onPress={handleLogout}
+              style={[styles.headerLogout, { borderColor: cardBorder }]}
+            >
+              <ThemedText style={[styles.headerLogoutText, { color: muted }]}>Log out</ThemedText>
             </Pressable>
           ) : null}
         </View>
@@ -157,73 +115,80 @@ export default function ProfileScreen() {
         </View>
       )}
 
-      {status === 'error' && errorMessage && (
+      {(status === 'error' || errorMessage || error) && (
         <View style={styles.stateBlock}>
           <ThemedText type="defaultSemiBold">Couldn&apos;t continue</ThemedText>
-          <ThemedText style={styles.muted}>{errorMessage}</ThemedText>
+          <ThemedText style={[styles.muted, { color: muted }]}>{errorMessage ?? error}</ThemedText>
         </View>
       )}
 
       {!account && status !== 'loading' && (
-        <View style={styles.card}>
+        <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}
+        >
           <ThemedText type="defaultSemiBold">
             {mode === 'login' ? 'Log in' : 'Create your account'}
           </ThemedText>
 
           {mode === 'signup' && (
             <View style={styles.field}>
-              <ThemedText style={styles.label}>Name</ThemedText>
+              <ThemedText style={[styles.label, { color: muted }]}>Name</ThemedText>
               <TextInput
                 autoCapitalize="words"
                 value={name}
                 onChangeText={setName}
-                style={styles.input}
+                style={[styles.input, { borderColor, backgroundColor: inputBg, color: inputText }]}
                 placeholder="Your name"
-                placeholderTextColor="rgba(0,0,0,0.4)"
+                placeholderTextColor={placeholderColor}
               />
             </View>
           )}
 
           <View style={styles.field}>
-            <ThemedText style={styles.label}>Email</ThemedText>
+            <ThemedText style={[styles.label, { color: muted }]}>Email</ThemedText>
             <TextInput
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="email-address"
               value={email}
               onChangeText={setEmail}
-              style={styles.input}
+              style={[styles.input, { borderColor, backgroundColor: inputBg, color: inputText }]}
               placeholder="email@example.com"
-              placeholderTextColor="rgba(0,0,0,0.4)"
+              placeholderTextColor={placeholderColor}
             />
           </View>
 
           <View style={styles.field}>
-            <ThemedText style={styles.label}>Password</ThemedText>
+            <ThemedText style={[styles.label, { color: muted }]}>Password</ThemedText>
             <TextInput
               autoCapitalize="none"
               autoCorrect={false}
               secureTextEntry
               value={password}
               onChangeText={setPassword}
-              style={styles.input}
+              style={[styles.input, { borderColor, backgroundColor: inputBg, color: inputText }]}
               placeholder="password"
-              placeholderTextColor="rgba(0,0,0,0.4)"
+              placeholderTextColor={placeholderColor}
             />
           </View>
 
           <Pressable
-            style={[styles.primaryButton, !canSubmit && styles.primaryButtonDisabled]}
+            style={[
+              styles.primaryButton,
+              { backgroundColor: primaryBg },
+              !canSubmit && styles.primaryButtonDisabled,
+            ]}
             onPress={mode === 'login' ? handleLogin : handleSignup}
             disabled={!canSubmit}
           >
-            <ThemedText style={styles.primaryButtonText}>
+            <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}
+            >
               {mode === 'login' ? 'Continue' : 'Sign up'}
             </ThemedText>
           </Pressable>
 
           <Pressable style={styles.linkButton} onPress={toggleMode}>
-            <ThemedText style={styles.linkText}>
+            <ThemedText style={[styles.linkText, { color: muted }]}
+            >
               {mode === 'login'
                 ? 'Need an account? Sign up'
                 : 'Already have an account? Log in'}
@@ -233,7 +198,16 @@ export default function ProfileScreen() {
       )}
 
       {account && status !== 'loading' && (
-        <View style={styles.card}>
+        <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+          <Link href="/filters" asChild>
+            <Pressable style={[styles.primaryButton, { backgroundColor: primaryBg }]}
+            >
+              <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}
+              >
+                Edit filters
+              </ThemedText>
+            </Pressable>
+          </Link>
           <View style={styles.row}>
             <ThemedText type="defaultSemiBold">Name</ThemedText>
             <ThemedText>{account.name}</ThemedText>
@@ -274,7 +248,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.12)',
   },
   headerLogoutText: {
     opacity: 0.8,
@@ -287,8 +260,6 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.08)',
-    backgroundColor: 'rgba(0, 0, 0, 0.02)',
     gap: 16,
   },
   row: {
@@ -302,15 +273,11 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.12)',
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 12,
-    color: '#111',
-    backgroundColor: 'rgba(255, 255, 255, 0.85)',
   },
   primaryButton: {
-    backgroundColor: '#111',
     paddingVertical: 12,
     borderRadius: 12,
     alignItems: 'center',
@@ -319,23 +286,13 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   primaryButtonText: {
-    color: '#fff',
+    fontWeight: '600',
   },
   linkButton: {
     alignItems: 'center',
   },
   linkText: {
     opacity: 0.7,
-  },
-  secondaryButton: {
-    borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.12)',
-    paddingVertical: 10,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  secondaryButtonText: {
-    color: '#111',
   },
   muted: {
     opacity: 0.6,

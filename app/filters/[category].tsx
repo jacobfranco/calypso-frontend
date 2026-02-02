@@ -1,0 +1,1211 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+
+import { ThemedText } from '@/components/themed-text';
+import {
+  Filters,
+  Importance,
+  TagPreference,
+  TagsResponse,
+  fetchTags,
+} from '@/lib/api';
+import { useAuth } from '@/lib/auth';
+import { useFiltersDraft } from '@/lib/filters-draft';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useThemeColor } from '@/hooks/use-theme-color';
+
+const IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
+  { label: 'Not important', value: 'NOT_IMPORTANT' },
+  { label: 'Preference', value: 'PREFERENCE' },
+  { label: 'Dealbreaker', value: 'DEALBREAKER' },
+];
+
+const RELATIONSHIP_MODES = ['casual', 'serious'];
+
+type TagRole = 'self' | 'seeking';
+
+type ImportancePalette = Record<Importance, { bg: string; border: string; text: string }>;
+
+const CATEGORY_LABELS: Record<string, string> = {
+  relationship: 'Relationship mode',
+  gender: 'Gender',
+  age: 'Age',
+  location: 'Location',
+  religion: 'Religion',
+  politics: 'Politics',
+  lifestyle: 'Lifestyle',
+  interests: 'Interests',
+};
+
+function flattenTags(groups: TagsResponse | null): string[] {
+  if (!groups) return [];
+  return Object.values(groups).flat();
+}
+
+
+function toggleItem(list: string[], value: string): string[] {
+  if (list.includes(value)) {
+    return list.filter((item) => item !== value);
+  }
+  return [...list, value];
+}
+
+export default function FiltersCategoryScreen() {
+  const { category } = useLocalSearchParams<{ category: string }>();
+  const { account, token } = useAuth();
+  const { draft, status: draftStatus, message: draftMessage, updateDraft } = useFiltersDraft();
+  const theme = useColorScheme() ?? 'light';
+  const router = useRouter();
+
+  const borderColor = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.12)', dark: 'rgba(255, 255, 255, 0.18)' },
+    'icon'
+  );
+  const softBorder = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.08)', dark: 'rgba(255, 255, 255, 0.12)' },
+    'icon'
+  );
+  const cardBg = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.02)', dark: 'rgba(255, 255, 255, 0.04)' },
+    'background'
+  );
+  const roleActiveBg = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.06)', dark: 'rgba(255, 255, 255, 0.08)' },
+    'background'
+  );
+  const inputBg = useThemeColor(
+    { light: 'rgba(255, 255, 255, 0.85)', dark: 'rgba(255, 255, 255, 0.08)' },
+    'background'
+  );
+  const inputText = useThemeColor({}, 'text');
+  const placeholderColor = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.4)', dark: 'rgba(255, 255, 255, 0.4)' },
+    'text'
+  );
+  const muted = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.6)', dark: 'rgba(255, 255, 255, 0.6)' },
+    'text'
+  );
+  const overlayColor = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.35)', dark: 'rgba(0, 0, 0, 0.7)' },
+    'background'
+  );
+  const modalBg = useThemeColor({ light: '#fff', dark: '#1c1f24' }, 'background');
+  const primaryBg = useThemeColor({ light: '#111', dark: '#f1f1f1' }, 'text');
+  const primaryText = useThemeColor({ light: '#fff', dark: '#111' }, 'text');
+
+  const importancePalette: ImportancePalette = useMemo(() => {
+    if (theme === 'dark') {
+      return {
+        NOT_IMPORTANT: {
+          bg: 'rgba(255, 255, 255, 0.08)',
+          border: 'rgba(255, 255, 255, 0.24)',
+          text: 'rgba(255, 255, 255, 0.85)',
+        },
+        PREFERENCE: {
+          bg: 'rgba(86, 153, 255, 0.28)',
+          border: 'rgba(86, 153, 255, 0.6)',
+          text: '#cfe0ff',
+        },
+        DEALBREAKER: {
+          bg: 'rgba(148, 98, 255, 0.3)',
+          border: 'rgba(148, 98, 255, 0.6)',
+          text: '#e5d3ff',
+        },
+      };
+    }
+
+    return {
+      NOT_IMPORTANT: {
+        bg: 'rgba(0, 0, 0, 0.06)',
+        border: 'rgba(0, 0, 0, 0.2)',
+        text: 'rgba(0, 0, 0, 0.8)',
+      },
+      PREFERENCE: {
+        bg: 'rgba(86, 153, 255, 0.18)',
+        border: 'rgba(86, 153, 255, 0.5)',
+        text: '#0f2a5c',
+      },
+      DEALBREAKER: {
+        bg: 'rgba(148, 98, 255, 0.18)',
+        border: 'rgba(148, 98, 255, 0.5)',
+        text: '#2d0f5c',
+      },
+    };
+  }, [theme]);
+
+  const [tagStatus, setTagStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [message, setMessage] = useState<string | null>(null);
+
+  const [relationshipMode, setRelationshipMode] = useState<string>('');
+
+  const [genderSelf, setGenderSelf] = useState<string>('');
+  const [genderSeeking, setGenderSeeking] = useState<string[]>([]);
+  const [genderImportance, setGenderImportance] = useState<Importance>('NOT_IMPORTANT');
+
+  const [ageSelf, setAgeSelf] = useState('');
+  const [ageMin, setAgeMin] = useState('');
+  const [ageMax, setAgeMax] = useState('');
+  const [ageImportance, setAgeImportance] = useState<Importance>('NOT_IMPORTANT');
+
+  const [lat, setLat] = useState('');
+  const [lon, setLon] = useState('');
+  const [radiusKm, setRadiusKm] = useState('');
+
+  const [religionSelf, setReligionSelf] = useState('');
+  const [religionSeeking, setReligionSeeking] = useState<string[]>([]);
+  const [religionImportance, setReligionImportance] = useState<Importance>('NOT_IMPORTANT');
+
+  const [politicsSelf, setPoliticsSelf] = useState('');
+  const [politicsSeeking, setPoliticsSeeking] = useState<string[]>([]);
+  const [politicsImportance, setPoliticsImportance] = useState<Importance>('NOT_IMPORTANT');
+
+  const [lifestyleSelf, setLifestyleSelf] = useState<string[]>([]);
+  const [lifestylePrefs, setLifestylePrefs] = useState<Record<string, Importance>>({});
+
+  const [interestsSelf, setInterestsSelf] = useState<string[]>([]);
+  const [interestsPrefs, setInterestsPrefs] = useState<Record<string, Importance>>({});
+
+  const [genderTags, setGenderTags] = useState<TagsResponse | null>(null);
+  const [religionTags, setReligionTags] = useState<TagsResponse | null>(null);
+  const [politicsTags, setPoliticsTags] = useState<TagsResponse | null>(null);
+  const [lifestyleTags, setLifestyleTags] = useState<TagsResponse | null>(null);
+  const [interestTags, setInterestTags] = useState<TagsResponse | null>(null);
+
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [activeRole, setActiveRole] = useState<TagRole>('self');
+  const [activeImportance, setActiveImportance] = useState<Importance>('NOT_IMPORTANT');
+
+  const genderList = useMemo(() => flattenTags(genderTags), [genderTags]);
+  const religionList = useMemo(() => flattenTags(religionTags), [religionTags]);
+  const politicsList = useMemo(() => flattenTags(politicsTags), [politicsTags]);
+  const lifestyleList = useMemo(() => flattenTags(lifestyleTags), [lifestyleTags]);
+  const interestList = useMemo(() => flattenTags(interestTags), [interestTags]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadTags = async () => {
+      if (!category) return;
+      setTagStatus('loading');
+      try {
+        if (['gender', 'religion', 'politics', 'lifestyle', 'interests'].includes(category)) {
+          const requests = [] as Promise<TagsResponse>[];
+          if (category === 'gender') requests.push(fetchTags('gender'));
+          if (category === 'religion') requests.push(fetchTags('religion'));
+          if (category === 'politics') requests.push(fetchTags('politics'));
+          if (category === 'lifestyle') requests.push(fetchTags('lifestyle'));
+          if (category === 'interests') requests.push(fetchTags('interests'));
+          const [result] = await Promise.all(requests);
+          if (!mounted) return;
+          if (category === 'gender') setGenderTags(result);
+          if (category === 'religion') setReligionTags(result);
+          if (category === 'politics') setPoliticsTags(result);
+          if (category === 'lifestyle') setLifestyleTags(result);
+          if (category === 'interests') setInterestTags(result);
+        } else {
+          setTagStatus('idle');
+          return;
+        }
+        setTagStatus('idle');
+      } catch (error) {
+        if (!mounted) return;
+        setMessage(error instanceof Error ? error.message : 'Failed to load tag options');
+        setTagStatus('error');
+      }
+    };
+
+    loadTags();
+    return () => {
+      mounted = false;
+    };
+  }, [category]);
+
+  useEffect(() => {
+    if (!draft) return;
+    hydrate(draft);
+  }, [draft]);
+
+  useEffect(() => {
+    setMessage(null);
+  }, [category]);
+
+  const hydrate = (filters: Filters) => {
+    setRelationshipMode(filters.relationshipMode?.self ?? '');
+    setGenderSelf(filters.gender?.self ?? '');
+    setGenderSeeking(filters.gender?.seeking ?? []);
+    setGenderImportance(filters.gender?.importance ?? 'NOT_IMPORTANT');
+
+    setAgeSelf(filters.age?.self !== undefined ? String(filters.age.self) : '');
+    setAgeMin(filters.age?.min !== undefined ? String(filters.age.min) : '');
+    setAgeMax(filters.age?.max !== undefined ? String(filters.age.max) : '');
+    setAgeImportance(filters.age?.importance ?? 'NOT_IMPORTANT');
+
+    setLat(filters.location?.lat !== undefined ? String(filters.location.lat) : '');
+    setLon(filters.location?.lon !== undefined ? String(filters.location.lon) : '');
+    setRadiusKm(filters.location?.radiusKm !== undefined ? String(filters.location.radiusKm) : '');
+
+    setReligionSelf(filters.religion?.self ?? '');
+    setReligionSeeking(filters.religion?.seeking ?? []);
+    setReligionImportance(filters.religion?.importance ?? 'NOT_IMPORTANT');
+
+    setPoliticsSelf(filters.politics?.self ?? '');
+    setPoliticsSeeking(filters.politics?.seeking ?? []);
+    setPoliticsImportance(filters.politics?.importance ?? 'NOT_IMPORTANT');
+
+    setLifestyleSelf(filters.lifestyle?.self ?? []);
+    const lifestyleMap: Record<string, Importance> = {};
+    (filters.lifestyle?.preferences ?? []).forEach((pref) => {
+      lifestyleMap[pref.tag] = pref.importance;
+    });
+    setLifestylePrefs(lifestyleMap);
+
+    setInterestsSelf(filters.interests?.self ?? []);
+    const interestMap: Record<string, Importance> = {};
+    (filters.interests?.preferences ?? []).forEach((pref) => {
+      interestMap[pref.tag] = pref.importance;
+    });
+    setInterestsPrefs(interestMap);
+  };
+
+  const buildPreferences = (prefs: Record<string, Importance>): TagPreference[] => {
+    return Object.entries(prefs).map(([tag, importance]) => ({ tag, importance }));
+  };
+
+  const handleSave = async () => {
+    if (!account || !category) return;
+    setMessage(null);
+
+    const payload: Filters = {
+      relationshipMode: relationshipMode ? { self: relationshipMode } : undefined,
+      gender: {
+        self: genderSelf || undefined,
+        seeking: genderSeeking.length ? genderSeeking : undefined,
+        importance: genderImportance,
+      },
+      age: {
+        self: ageSelf === '' ? undefined : Number(ageSelf),
+        min: ageMin === '' ? undefined : Number(ageMin),
+        max: ageMax === '' ? undefined : Number(ageMax),
+        importance: ageImportance,
+      },
+      location: {
+        lat: lat === '' ? undefined : Number(lat),
+        lon: lon === '' ? undefined : Number(lon),
+        radiusKm: radiusKm === '' ? undefined : Number(radiusKm),
+      },
+    };
+
+    if (religionSelf || religionSeeking.length) {
+      payload.religion = {
+        self: religionSelf || undefined,
+        seeking: religionSeeking.length ? religionSeeking : undefined,
+        importance: religionImportance,
+      };
+    }
+
+    if (politicsSelf || politicsSeeking.length) {
+      payload.politics = {
+        self: politicsSelf || undefined,
+        seeking: politicsSeeking.length ? politicsSeeking : undefined,
+        importance: politicsImportance,
+      };
+    }
+
+    if (lifestyleSelf.length || Object.keys(lifestylePrefs).length) {
+      payload.lifestyle = {
+        self: lifestyleSelf.length ? lifestyleSelf : undefined,
+        preferences: Object.keys(lifestylePrefs).length
+          ? buildPreferences(lifestylePrefs)
+          : undefined,
+      };
+    }
+
+    if (interestsSelf.length || Object.keys(interestsPrefs).length) {
+      payload.interests = {
+        self: interestsSelf.length ? interestsSelf : undefined,
+        preferences: Object.keys(interestsPrefs).length
+          ? buildPreferences(interestsPrefs)
+          : undefined,
+      };
+    }
+
+    updateDraft(payload);
+    router.back();
+  };
+
+  const openSeekingConfig = (tag: string) => {
+    if (!category) return;
+    setActiveRole('seeking');
+    setActiveTag(tag);
+
+    if (category === 'lifestyle') {
+      const importance = lifestylePrefs[tag] ?? 'NOT_IMPORTANT';
+      setActiveImportance(importance);
+      return;
+    }
+    if (category === 'interests') {
+      const importance = interestsPrefs[tag] ?? 'NOT_IMPORTANT';
+      setActiveImportance(importance);
+    }
+  };
+
+  const applyTagConfig = () => {
+    if (!activeTag || !category) return;
+
+    if (category === 'lifestyle') {
+      if (activeRole === 'seeking') {
+        setLifestyleSelf(lifestyleSelf.filter((t) => t !== activeTag));
+        setLifestylePrefs((prev) => ({
+          ...prev,
+          [activeTag]: activeImportance,
+        }));
+      }
+    }
+
+    if (category === 'interests') {
+      if (activeRole === 'seeking') {
+        setInterestsSelf(interestsSelf.filter((t) => t !== activeTag));
+        setInterestsPrefs((prev) => ({
+          ...prev,
+          [activeTag]: activeImportance,
+        }));
+      }
+    }
+
+    setActiveTag(null);
+  };
+
+  const removePreference = (tag: string) => {
+    if (category === 'lifestyle') {
+      setLifestylePrefs((prev) => {
+        const next = { ...prev };
+        delete next[tag];
+        return next;
+      });
+      return;
+    }
+    if (category === 'interests') {
+      setInterestsPrefs((prev) => {
+        const next = { ...prev };
+        delete next[tag];
+        return next;
+      });
+    }
+  };
+
+  const handleSelectTag = (tag: string) => {
+    if (!category) return;
+
+    if (category === 'gender') {
+      if (activeRole === 'self') {
+        setGenderSelf(genderSelf === tag ? '' : tag);
+        setGenderSeeking(genderSeeking.filter((t) => t !== tag));
+      } else {
+        setGenderSelf(genderSelf === tag ? '' : genderSelf);
+        setGenderSeeking(toggleItem(genderSeeking, tag));
+      }
+      return;
+    }
+
+    if (category === 'religion') {
+      if (activeRole === 'self') {
+        setReligionSelf(religionSelf === tag ? '' : tag);
+        setReligionSeeking(religionSeeking.filter((t) => t !== tag));
+      } else {
+        setReligionSelf(religionSelf === tag ? '' : religionSelf);
+        setReligionSeeking(toggleItem(religionSeeking, tag));
+      }
+      return;
+    }
+
+    if (category === 'politics') {
+      if (activeRole === 'self') {
+        setPoliticsSelf(politicsSelf === tag ? '' : tag);
+        setPoliticsSeeking(politicsSeeking.filter((t) => t !== tag));
+      } else {
+        setPoliticsSelf(politicsSelf === tag ? '' : politicsSelf);
+        setPoliticsSeeking(toggleItem(politicsSeeking, tag));
+      }
+      return;
+    }
+
+    if (category === 'lifestyle') {
+      if (activeRole === 'self') {
+        setLifestyleSelf(toggleItem(lifestyleSelf, tag));
+        setLifestylePrefs((prev) => {
+          const next = { ...prev };
+          delete next[tag];
+          return next;
+        });
+      } else {
+        if (lifestylePrefs[tag]) {
+          openSeekingConfig(tag);
+        } else {
+          setLifestyleSelf(lifestyleSelf.filter((t) => t !== tag));
+          setLifestylePrefs((prev) => ({
+            ...prev,
+            [tag]: activeImportance,
+          }));
+        }
+      }
+      return;
+    }
+
+    if (category === 'interests') {
+      if (activeRole === 'self') {
+        setInterestsSelf(toggleItem(interestsSelf, tag));
+        setInterestsPrefs((prev) => {
+          const next = { ...prev };
+          delete next[tag];
+          return next;
+        });
+      } else {
+        if (interestsPrefs[tag]) {
+          openSeekingConfig(tag);
+        } else {
+          setInterestsSelf(interestsSelf.filter((t) => t !== tag));
+          setInterestsPrefs((prev) => ({
+            ...prev,
+            [tag]: activeImportance,
+          }));
+        }
+      }
+    }
+  };
+
+  const title = CATEGORY_LABELS[category ?? ''] ?? 'Filters';
+
+  if (!account || !token) {
+    return (
+      <View style={[styles.modalOverlay, { backgroundColor: overlayColor }]}>
+        <View style={[styles.modalCard, { backgroundColor: modalBg, borderColor }]}>
+          <View style={styles.modalHeader}>
+            <ThemedText type="defaultSemiBold">{title}</ThemedText>
+            <Pressable onPress={() => router.back()}>
+              <ThemedText style={[styles.linkText, { color: muted }]}>Close</ThemedText>
+            </Pressable>
+          </View>
+          <ThemedText type="subtitle">Log in to edit your filters.</ThemedText>
+        </View>
+      </View>
+    );
+  }
+
+  if (draftStatus === 'loading' && !draft) {
+    return (
+      <View style={[styles.modalOverlay, { backgroundColor: overlayColor }]}>
+        <View style={[styles.modalCard, { backgroundColor: modalBg, borderColor }]}>
+          <View style={styles.stateBlock}>
+            <ActivityIndicator />
+            <ThemedText>Loading…</ThemedText>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={[styles.modalOverlay, { backgroundColor: overlayColor }]}>
+      <View style={[styles.modalCard, { backgroundColor: modalBg, borderColor }]}>
+        <View style={styles.modalHeader}>
+          <ThemedText type="defaultSemiBold">{title}</ThemedText>
+          <Pressable onPress={() => router.back()}>
+            <ThemedText style={[styles.linkText, { color: muted }]}>Close</ThemedText>
+          </Pressable>
+        </View>
+        <ScrollView contentContainerStyle={styles.content}>
+        {(tagStatus === 'loading' || draftStatus === 'loading') && (
+          <View style={styles.stateBlock}>
+            <ActivityIndicator />
+            <ThemedText>Loading…</ThemedText>
+          </View>
+        )}
+
+        {message && (
+          <View style={styles.stateBlock}>
+            <ThemedText style={[styles.muted, { color: muted }]}>{message}</ThemedText>
+          </View>
+        )}
+
+        {!message && draftMessage && (
+          <View style={styles.stateBlock}>
+            <ThemedText style={[styles.muted, { color: muted }]}>{draftMessage}</ThemedText>
+          </View>
+        )}
+
+        {category === 'relationship' && (
+          <Section title="Relationship mode">
+            <ChipRow
+              options={RELATIONSHIP_MODES}
+              selected={relationshipMode ? [relationshipMode] : []}
+              onToggle={(value) => setRelationshipMode(value)}
+              borderColor={borderColor}
+              palette={importancePalette}
+            />
+          </Section>
+        )}
+
+        {category === 'age' && (
+          <Section title="Age">
+            <View style={styles.inlineRow}>
+              <Input
+                label="Your age"
+                value={ageSelf}
+                onChange={setAgeSelf}
+                borderColor={borderColor}
+                inputBg={inputBg}
+                placeholderColor={placeholderColor}
+                textColor={inputText}
+                labelColor={muted}
+              />
+              <Input
+                label="Min"
+                value={ageMin}
+                onChange={setAgeMin}
+                borderColor={borderColor}
+                inputBg={inputBg}
+                placeholderColor={placeholderColor}
+                textColor={inputText}
+                labelColor={muted}
+              />
+              <Input
+                label="Max"
+                value={ageMax}
+                onChange={setAgeMax}
+                borderColor={borderColor}
+                inputBg={inputBg}
+                placeholderColor={placeholderColor}
+                textColor={inputText}
+                labelColor={muted}
+              />
+            </View>
+            <ImportanceRow
+              value={ageImportance}
+              onChange={setAgeImportance}
+              palette={importancePalette}
+              borderColor={borderColor}
+            />
+          </Section>
+        )}
+
+        {category === 'location' && (
+          <Section title="Location">
+            <View style={styles.inlineRow}>
+              <Input
+                label="Lat"
+                value={lat}
+                onChange={setLat}
+                borderColor={borderColor}
+                inputBg={inputBg}
+                placeholderColor={placeholderColor}
+                textColor={inputText}
+                labelColor={muted}
+              />
+              <Input
+                label="Lon"
+                value={lon}
+                onChange={setLon}
+                borderColor={borderColor}
+                inputBg={inputBg}
+                placeholderColor={placeholderColor}
+                textColor={inputText}
+                labelColor={muted}
+              />
+              <Input
+                label="Radius km"
+                value={radiusKm}
+                onChange={setRadiusKm}
+                borderColor={borderColor}
+                inputBg={inputBg}
+                placeholderColor={placeholderColor}
+                textColor={inputText}
+                labelColor={muted}
+              />
+            </View>
+          </Section>
+        )}
+
+        {category === 'gender' && (
+          <TagSections
+            selfLabel="Self"
+            seekingLabel="Seeking"
+            allLabel="All tags"
+            selfTags={genderSelf ? [genderSelf] : []}
+            seekingTags={genderSeeking}
+            allTags={genderList}
+            importance={genderImportance}
+            importanceByTag={{}}
+            activeRole={activeRole}
+            onRoleChange={setActiveRole}
+            onSelectTag={handleSelectTag}
+            showImportance
+            onImportanceChange={setGenderImportance}
+            roleActiveBg={roleActiveBg}
+            borderColor={borderColor}
+            palette={importancePalette}
+            muted={muted}
+          />
+        )}
+
+        {category === 'religion' && (
+          <TagSections
+            selfLabel="Self"
+            seekingLabel="Seeking"
+            allLabel="All tags"
+            selfTags={religionSelf ? [religionSelf] : []}
+            seekingTags={religionSeeking}
+            allTags={religionList}
+            importance={religionImportance}
+            importanceByTag={{}}
+            activeRole={activeRole}
+            onRoleChange={setActiveRole}
+            onSelectTag={handleSelectTag}
+            showImportance
+            onImportanceChange={setReligionImportance}
+            roleActiveBg={roleActiveBg}
+            borderColor={borderColor}
+            palette={importancePalette}
+            muted={muted}
+          />
+        )}
+
+        {category === 'politics' && (
+          <TagSections
+            selfLabel="Self"
+            seekingLabel="Seeking"
+            allLabel="All tags"
+            selfTags={politicsSelf ? [politicsSelf] : []}
+            seekingTags={politicsSeeking}
+            allTags={politicsList}
+            importance={politicsImportance}
+            importanceByTag={{}}
+            activeRole={activeRole}
+            onRoleChange={setActiveRole}
+            onSelectTag={handleSelectTag}
+            showImportance
+            onImportanceChange={setPoliticsImportance}
+            roleActiveBg={roleActiveBg}
+            borderColor={borderColor}
+            palette={importancePalette}
+            muted={muted}
+          />
+        )}
+
+        {category === 'lifestyle' && (
+          <TagSections
+            selfLabel="Self"
+            seekingLabel="Seeking"
+            allLabel="All tags"
+            selfTags={lifestyleSelf}
+            seekingTags={Object.keys(lifestylePrefs)}
+            allTags={lifestyleList}
+            importance={activeImportance}
+            importanceByTag={lifestylePrefs}
+            activeRole={activeRole}
+            onRoleChange={setActiveRole}
+            onSelectTag={handleSelectTag}
+            roleActiveBg={roleActiveBg}
+            borderColor={borderColor}
+            palette={importancePalette}
+            muted={muted}
+          />
+        )}
+
+        {category === 'interests' && (
+          <TagSections
+            selfLabel="Self"
+            seekingLabel="Seeking"
+            allLabel="All tags"
+            selfTags={interestsSelf}
+            seekingTags={Object.keys(interestsPrefs)}
+            allTags={interestList}
+            importance={activeImportance}
+            importanceByTag={interestsPrefs}
+            activeRole={activeRole}
+            onRoleChange={setActiveRole}
+            onSelectTag={handleSelectTag}
+            roleActiveBg={roleActiveBg}
+            borderColor={borderColor}
+            palette={importancePalette}
+            muted={muted}
+          />
+        )}
+
+        <Pressable style={[styles.saveButton, { backgroundColor: primaryBg }]} onPress={handleSave}>
+          <ThemedText style={[styles.saveButtonText, { color: primaryText }]}>
+            Apply
+          </ThemedText>
+        </Pressable>
+        </ScrollView>
+      </View>
+
+      <TagConfigModal
+        visible={activeTag !== null && activeRole === 'seeking'}
+        tag={activeTag ?? ''}
+        importance={activeImportance}
+        onImportanceChange={setActiveImportance}
+        onRemove={() => {
+          if (!activeTag || !category) return;
+          if (category === 'lifestyle') {
+            removePreference(activeTag);
+          }
+          if (category === 'interests') {
+            removePreference(activeTag);
+          }
+          setActiveTag(null);
+        }}
+        onClose={() => setActiveTag(null)}
+        onApply={applyTagConfig}
+        borderColor={borderColor}
+        primaryBg={primaryBg}
+        primaryText={primaryText}
+        muted={muted}
+        overlayColor={overlayColor}
+        modalBg={modalBg}
+        palette={importancePalette}
+      />
+    </View>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.section}>
+      <ThemedText type="defaultSemiBold">{title}</ThemedText>
+      {children}
+    </View>
+  );
+}
+
+function TagSections({
+  selfLabel,
+  seekingLabel,
+  allLabel,
+  selfTags,
+  seekingTags,
+  allTags,
+  importance,
+  importanceByTag,
+  activeRole,
+  onRoleChange,
+  onSelectTag,
+  showImportance = false,
+  onImportanceChange,
+  roleActiveBg,
+  borderColor,
+  palette,
+  muted,
+}: {
+  selfLabel: string;
+  seekingLabel: string;
+  allLabel: string;
+  selfTags: string[];
+  seekingTags: string[];
+  allTags: string[];
+  importance: Importance;
+  importanceByTag: Record<string, Importance>;
+  activeRole: TagRole;
+  onRoleChange: (role: TagRole) => void;
+  onSelectTag: (tag: string) => void;
+  showImportance?: boolean;
+  onImportanceChange?: (value: Importance) => void;
+  roleActiveBg: string;
+  borderColor: string;
+  palette: ImportancePalette;
+  muted: string;
+}) {
+  const formatRoleLabel = (tags: string[]) => {
+    if (!tags.length) return '+';
+    if (tags.length === 1) return tags[0];
+    return `${tags[0]} +${tags.length - 1}`;
+  };
+
+  return (
+    <View style={styles.section}>
+      <View style={styles.roleRowLabels}>
+        <ThemedText style={[styles.roleLabel, { color: muted }]}>{selfLabel}</ThemedText>
+        <ThemedText style={[styles.roleLabel, { color: muted }]}>{seekingLabel}</ThemedText>
+      </View>
+      <View style={styles.roleRow}>
+        <Pressable
+          style={[
+            styles.rolePill,
+            { borderColor },
+            activeRole === 'self' && { backgroundColor: roleActiveBg },
+          ]}
+          onPress={() => onRoleChange('self')}
+        >
+          <ThemedText style={[styles.rolePillText, activeRole === 'self' && styles.rolePillTextActive]}>
+            {formatRoleLabel(selfTags)}
+          </ThemedText>
+        </Pressable>
+        <Pressable
+          style={[
+            styles.rolePill,
+            { borderColor },
+            activeRole === 'seeking' && { backgroundColor: roleActiveBg },
+          ]}
+          onPress={() => onRoleChange('seeking')}
+        >
+          <ThemedText style={[styles.rolePillText, activeRole === 'seeking' && styles.rolePillTextActive]}>
+            {formatRoleLabel(seekingTags)}
+          </ThemedText>
+        </Pressable>
+      </View>
+      {showImportance && activeRole === 'seeking' && onImportanceChange ? (
+        <ImportanceRow
+          value={importance}
+          onChange={onImportanceChange}
+          palette={palette}
+          borderColor={borderColor}
+        />
+      ) : null}
+      <ThemedText style={[styles.label, { color: muted }]}>{allLabel}</ThemedText>
+      <ChipRow
+        options={allTags}
+        selected={activeRole === 'self' ? selfTags : seekingTags}
+        onToggle={onSelectTag}
+        palette={palette}
+        borderColor={borderColor}
+        importance={importance}
+        importanceByTag={importanceByTag}
+      />
+    </View>
+  );
+}
+
+function TagConfigModal({
+  visible,
+  tag,
+  importance,
+  onImportanceChange,
+  onRemove,
+  onClose,
+  onApply,
+  borderColor,
+  primaryBg,
+  primaryText,
+  muted,
+  overlayColor,
+  modalBg,
+  palette,
+}: {
+  visible: boolean;
+  tag: string;
+  importance: Importance;
+  onImportanceChange: (value: Importance) => void;
+  onRemove: () => void;
+  onClose: () => void;
+  onApply: () => void;
+  borderColor: string;
+  primaryBg: string;
+  primaryText: string;
+  muted: string;
+  overlayColor: string;
+  modalBg: string;
+  palette: ImportancePalette;
+}) {
+  return (
+    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
+      <View style={[styles.overlay, { backgroundColor: overlayColor }]}>
+        <View style={[styles.configCard, { backgroundColor: modalBg, borderColor }]}>
+          <ThemedText type="defaultSemiBold">{tag}</ThemedText>
+          <View style={styles.section}>
+            <ThemedText style={[styles.label, { color: muted }]}>Importance</ThemedText>
+            <ImportanceRow
+              value={importance}
+              onChange={onImportanceChange}
+              palette={palette}
+              borderColor={borderColor}
+            />
+          </View>
+          <View style={styles.configActions}>
+            <Pressable onPress={onRemove}>
+              <ThemedText style={[styles.linkText, { color: muted }]}>Clear</ThemedText>
+            </Pressable>
+            <View style={styles.configRight}>
+              <Pressable onPress={onClose}>
+                <ThemedText style={[styles.linkText, { color: muted }]}>Cancel</ThemedText>
+              </Pressable>
+              <Pressable style={[styles.primaryButtonSmall, { backgroundColor: primaryBg }]} onPress={onApply}>
+                <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}>Apply</ThemedText>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function Input({
+  label,
+  value,
+  onChange,
+  borderColor,
+  inputBg,
+  placeholderColor,
+  textColor,
+  labelColor,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  borderColor: string;
+  inputBg: string;
+  placeholderColor: string;
+  textColor: string;
+  labelColor: string;
+}) {
+  return (
+    <View style={styles.inputGroup}>
+      <ThemedText style={[styles.label, { color: labelColor }]}>{label}</ThemedText>
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        style={[styles.input, { borderColor, backgroundColor: inputBg, color: textColor }]}
+        keyboardType="numeric"
+        placeholder=""
+        placeholderTextColor={placeholderColor}
+      />
+    </View>
+  );
+}
+
+function ChipRow({
+  options,
+  selected,
+  onToggle,
+  palette,
+  borderColor,
+  importance = 'NOT_IMPORTANT',
+  importanceByTag,
+}: {
+  options: string[];
+  selected: string[];
+  onToggle: (value: string) => void;
+  palette: ImportancePalette;
+  borderColor: string;
+  importance?: Importance;
+  importanceByTag?: Record<string, Importance>;
+}) {
+  return (
+    <View style={styles.chipRow}>
+      {options.map((option) => {
+        const active = selected.includes(option);
+        const chipImportance = importanceByTag?.[option] ?? importance;
+        const importanceStyle = palette[chipImportance];
+        return (
+          <Pressable
+            key={option}
+            style={[
+              styles.chip,
+              { borderColor },
+              active && { backgroundColor: importanceStyle.bg, borderColor: importanceStyle.border },
+            ]}
+            onPress={() => onToggle(option)}
+          >
+            <ThemedText
+              style={[
+                styles.chipText,
+                active && { color: importanceStyle.text },
+              ]}
+            >
+              {option}
+            </ThemedText>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function ImportanceRow({
+  value,
+  onChange,
+  palette,
+  borderColor,
+}: {
+  value: Importance;
+  onChange: (value: Importance) => void;
+  palette: ImportancePalette;
+  borderColor: string;
+}) {
+  return (
+    <View style={styles.importanceRow}>
+      {IMPORTANCE_OPTIONS.map((option) => {
+        const active = option.value === value;
+        const importanceStyle = palette[option.value];
+        return (
+          <Pressable
+            key={option.value}
+            style={[
+              styles.chip,
+              { borderColor },
+              active && { backgroundColor: importanceStyle.bg, borderColor: importanceStyle.border },
+            ]}
+            onPress={() => onChange(option.value)}
+          >
+            <ThemedText
+              style={[
+                styles.chipText,
+                active && { color: importanceStyle.text },
+              ]}
+            >
+              {option.label}
+            </ThemedText>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    borderRadius: 16,
+    padding: 16,
+    gap: 16,
+    borderWidth: 1,
+    maxHeight: '85%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  content: {
+    gap: 16,
+    paddingBottom: 8,
+  },
+  stateBlock: {
+    gap: 8,
+  },
+  section: {
+    gap: 12,
+  },
+  label: {
+    opacity: 0.7,
+  },
+  roleRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  roleRowLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  roleLabel: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    opacity: 0.6,
+  },
+  rolePill: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    flex: 1,
+    alignItems: 'center',
+  },
+  rolePillText: {
+    opacity: 0.7,
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  rolePillTextActive: {
+    opacity: 1,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  chip: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  chipText: {
+    opacity: 0.8,
+  },
+  importanceRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  inlineRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  inputGroup: {
+    flex: 1,
+    gap: 6,
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  saveButton: {
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  saveButtonText: {
+    fontWeight: '600',
+  },
+  muted: {
+    opacity: 0.6,
+  },
+  linkText: {
+    opacity: 0.7,
+  },
+  overlay: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 20,
+  },
+  configCard: {
+    borderRadius: 16,
+    padding: 16,
+    gap: 16,
+    borderWidth: 1,
+  },
+  configActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  configRight: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+  },
+  primaryButtonSmall: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+  },
+  primaryButtonText: {
+    fontWeight: '600',
+  },
+});
