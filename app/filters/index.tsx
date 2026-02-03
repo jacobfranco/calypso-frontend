@@ -1,6 +1,7 @@
 import React, { useLayoutEffect, useMemo } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Link, useNavigation } from 'expo-router';
+import type { Href } from 'expo-router';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -8,16 +9,80 @@ import { useAuth } from '@/lib/auth';
 import { useFiltersDraft } from '@/lib/filters-draft';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
-const CATEGORIES = [
-  { key: 'relationship', label: 'Relationship mode' },
-  { key: 'gender', label: 'Gender' },
-  { key: 'age', label: 'Age' },
-  { key: 'location', label: 'Location' },
-  { key: 'religion', label: 'Religion' },
-  { key: 'politics', label: 'Politics' },
-  { key: 'lifestyle', label: 'Lifestyle' },
-  { key: 'interests', label: 'Interests' },
-];
+const RELATIONSHIP_CATEGORY = { key: 'relationship', label: 'Relationship mode' };
+const GENDER_CATEGORY = { key: 'gender', label: 'Gender' };
+const AGE_CATEGORY = { key: 'age', label: 'Age' };
+const LOCATION_CATEGORY = { key: 'location', label: 'Location' };
+const RELIGION_CATEGORY = { key: 'religion', label: 'Religion' };
+const POLITICS_CATEGORY = { key: 'politics', label: 'Politics' };
+const LIFESTYLE_CATEGORY = { key: 'lifestyle', label: 'Lifestyle' };
+const INTERESTS_CATEGORY = { key: 'interests', label: 'Interests' };
+
+const FILTER_CATEGORIES = [
+  RELATIONSHIP_CATEGORY,
+  GENDER_CATEGORY,
+  AGE_CATEGORY,
+  LOCATION_CATEGORY,
+  RELIGION_CATEGORY,
+  POLITICS_CATEGORY,
+  LIFESTYLE_CATEGORY,
+  INTERESTS_CATEGORY,
+] as const;
+
+type FilterCategoryKey = (typeof FILTER_CATEGORIES)[number]['key'];
+
+type FilterCategoryRowProps = {
+  href: Href;
+  label: string;
+  summary: string;
+  disabled: boolean;
+  itemBg: string;
+  border: string;
+  muted: string;
+};
+
+function FilterCategoryRow({
+  href,
+  label,
+  summary,
+  disabled,
+  itemBg,
+  border,
+  muted,
+}: FilterCategoryRowProps) {
+  return (
+    <Link href={href} asChild>
+      <Pressable
+        disabled={disabled}
+        style={({ pressed }) => [
+          styles.categoryPressable,
+          pressed && !disabled ? styles.categoryPressed : null,
+        ]}
+      >
+        <View
+          style={[
+            styles.categoryButton,
+            { backgroundColor: itemBg, borderColor: border, opacity: disabled ? 0.5 : 1 },
+          ]}
+        >
+          <View style={styles.categoryCopy}>
+            <ThemedText type="defaultSemiBold">{label}</ThemedText>
+            <ThemedText
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              style={[styles.summaryText, { color: muted }]}
+            >
+              {summary}
+            </ThemedText>
+          </View>
+          <View style={styles.categoryChevronWrap}>
+            <ThemedText style={[styles.categoryChevron, { color: muted }]}>›</ThemedText>
+          </View>
+        </View>
+      </Pressable>
+    </Link>
+  );
+}
 
 export default function FiltersIndexScreen() {
   const { account } = useAuth();
@@ -73,7 +138,7 @@ export default function FiltersIndexScreen() {
     });
   }, [account, dirty, headerAction, headerActionText, isBusy, navigation, saveAll]);
 
-  const summaries = useMemo(() => {
+  const summaries = useMemo<Record<FilterCategoryKey, string>>(() => {
     const filters = draft ?? {};
     const relationship = filters.relationshipMode?.self ?? 'Not set';
     const genderSelf = filters.gender?.self ? `Self: ${filters.gender.self}` : '';
@@ -133,6 +198,16 @@ export default function FiltersIndexScreen() {
     };
   }, [draft]);
 
+  const categoryItems = useMemo(
+    () =>
+      FILTER_CATEGORIES.map((category) => ({
+        ...category,
+        href: `/filters/${category.key}` as Href,
+        summary: summaries[category.key] ?? 'Not set',
+      })),
+    [summaries]
+  );
+
   return (
     <ThemedView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -149,31 +224,17 @@ export default function FiltersIndexScreen() {
           </View>
         )}
 
-        {CATEGORIES.map((cat) => (
-          <Link key={cat.key} href={`/filters/${cat.key}`} asChild>
-            <Pressable
-              disabled={!account}
-              style={({ pressed }) => [
-                styles.categoryButton,
-                { backgroundColor: itemBg, borderColor: border, opacity: account ? 1 : 0.5 },
-                pressed && account ? styles.categoryPressed : null,
-              ]}
-            >
-              <View style={styles.categoryCopy}>
-                <ThemedText type="defaultSemiBold">{cat.label}</ThemedText>
-                <ThemedText
-                  numberOfLines={1}
-                  ellipsizeMode="tail"
-                  style={[styles.summaryText, { color: muted }]}
-                >
-                  {summaries[cat.key as keyof typeof summaries] ?? 'Not set'}
-                </ThemedText>
-              </View>
-              <View style={styles.categoryChevronWrap}>
-                <ThemedText style={[styles.categoryChevron, { color: muted }]}>›</ThemedText>
-              </View>
-            </Pressable>
-          </Link>
+        {categoryItems.map((cat) => (
+          <FilterCategoryRow
+            key={cat.key}
+            href={cat.href}
+            label={cat.label}
+            summary={cat.summary}
+            disabled={!account}
+            itemBg={itemBg}
+            border={border}
+            muted={muted}
+          />
         ))}
 
       </ScrollView>
@@ -205,6 +266,9 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     width: '100%',
     gap: 12,
+  },
+  categoryPressable: {
+    alignSelf: 'stretch',
   },
   categoryCopy: {
     flex: 1,
