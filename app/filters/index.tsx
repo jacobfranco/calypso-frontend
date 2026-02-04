@@ -1,6 +1,7 @@
-import React, { useLayoutEffect, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Link, useNavigation } from 'expo-router';
+import * as Location from 'expo-location';
 import type { Href } from 'expo-router';
 
 import { ThemedText } from '@/components/themed-text';
@@ -104,6 +105,7 @@ export default function FiltersIndexScreen() {
   const headerActionText = useThemeColor({ light: '#fff', dark: '#111' }, 'text');
 
   const isBusy = status === 'loading' || status === 'saving';
+  const [locationName, setLocationName] = useState('');
 
   useLayoutEffect(() => {
     if (!account) {
@@ -138,6 +140,48 @@ export default function FiltersIndexScreen() {
     });
   }, [account, dirty, headerAction, headerActionText, isBusy, navigation, saveAll]);
 
+  useEffect(() => {
+    let mounted = true;
+
+    const loadLocationName = async () => {
+      const lat = draft?.location?.lat;
+      const lon = draft?.location?.lon;
+      if (lat === undefined || lon === undefined) {
+        setLocationName('');
+        return;
+      }
+      try {
+        const results = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lon });
+        if (!mounted) return;
+        const top = results[0];
+        if (!top) {
+          setLocationName('');
+          return;
+        }
+        const city = top.city || top.subregion || '';
+        const region = top.region || '';
+        const country = top.country || '';
+        if (city && region) {
+          setLocationName(`${city}, ${region}`);
+        } else if (city) {
+          setLocationName(city);
+        } else if (region) {
+          setLocationName(region);
+        } else {
+          setLocationName(country);
+        }
+      } catch {
+        if (!mounted) return;
+        setLocationName('');
+      }
+    };
+
+    loadLocationName();
+    return () => {
+      mounted = false;
+    };
+  }, [draft?.location?.lat, draft?.location?.lon]);
+
   const summaries = useMemo<Record<FilterCategoryKey, string>>(() => {
     const filters = draft ?? {};
     const relationship = filters.relationshipMode?.self ?? 'Not set';
@@ -152,9 +196,11 @@ export default function FiltersIndexScreen() {
       ageParts.push(`${filters.age.min}-${filters.age.max}`);
     }
     const age = ageParts.length ? ageParts.join(' · ') : 'Not set';
-    const location = filters.location?.lat !== undefined
-      ? `Lat ${filters.location.lat} · Lon ${filters.location.lon} · ${filters.location.radiusKm}km`
-      : 'Not set';
+    const location =
+      locationName ||
+      (filters.location?.lat !== undefined
+        ? `Lat ${filters.location.lat} · Lon ${filters.location.lon} · ${filters.location.radiusKm}km`
+        : 'Not set');
     const religionSelf = filters.religion?.self ? `Self: ${filters.religion.self}` : '';
     const religionSeeking = (filters.religion?.seeking ?? []).length
       ? `Seeking: ${(filters.religion?.seeking ?? []).join(', ')}`
@@ -196,7 +242,7 @@ export default function FiltersIndexScreen() {
       lifestyle,
       interests,
     };
-  }, [draft]);
+  }, [draft, locationName]);
 
   const categoryItems = useMemo(
     () =>

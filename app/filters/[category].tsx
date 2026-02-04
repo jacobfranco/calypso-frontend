@@ -165,6 +165,8 @@ export default function FiltersCategoryScreen() {
   const [radiusKm, setRadiusKm] = useState('');
   const [locationPermission, setLocationPermission] = useState<LocationPermission>('unknown');
   const [locating, setLocating] = useState(false);
+  const [geocoding, setGeocoding] = useState(false);
+  const [locationName, setLocationName] = useState('');
 
   const [religionSelf, setReligionSelf] = useState('');
   const [religionSeeking, setReligionSeeking] = useState<string[]>([]);
@@ -309,7 +311,20 @@ export default function FiltersCategoryScreen() {
     return parsed.toFixed(3);
   };
 
+  const formatPlacemark = (placemark: Location.LocationGeocodedAddress) => {
+    const city = placemark.city || placemark.subregion || '';
+    const region = placemark.region || '';
+    const country = placemark.country || '';
+    if (city && region) return `${city}, ${region}`;
+    if (city) return city;
+    if (region) return region;
+    return country;
+  };
+
   const locationLabel = useMemo(() => {
+    if (locating) return 'Locating…';
+    if (geocoding) return 'Finding location…';
+    if (locationName) return locationName;
     if (lat && lon) {
       return `Lat ${formatCoordinate(lat)} · Lon ${formatCoordinate(lon)}`;
     }
@@ -317,7 +332,41 @@ export default function FiltersCategoryScreen() {
       return 'Enable location';
     }
     return 'Locate';
-  }, [lat, lon, locationPermission]);
+  }, [geocoding, lat, locating, locationName, lon, locationPermission]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const runGeocode = async () => {
+      if (!lat || !lon) {
+        setLocationName('');
+        return;
+      }
+      setGeocoding(true);
+      try {
+        const latitude = Number(lat);
+        const longitude = Number(lon);
+        if (Number.isNaN(latitude) || Number.isNaN(longitude)) {
+          setLocationName('');
+          return;
+        }
+        const results = await Location.reverseGeocodeAsync({ latitude, longitude });
+        if (!mounted) return;
+        const top = results[0];
+        setLocationName(top ? formatPlacemark(top) : '');
+      } catch {
+        if (!mounted) return;
+        setLocationName('');
+      } finally {
+        if (mounted) setGeocoding(false);
+      }
+    };
+
+    runGeocode();
+    return () => {
+      mounted = false;
+    };
+  }, [lat, lon]);
 
   const handleUseLocation = async () => {
     if (locating) return;
