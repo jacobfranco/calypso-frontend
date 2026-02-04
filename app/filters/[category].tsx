@@ -9,6 +9,7 @@ import {
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as Location from 'expo-location';
 
 import { ThemedText } from '@/components/themed-text';
 import {
@@ -34,6 +35,8 @@ const RELATIONSHIP_MODES = ['casual', 'serious'];
 type TagRole = 'self' | 'seeking';
 
 type ImportancePalette = Record<Importance, { bg: string; border: string; text: string }>;
+
+type LocationPermission = Location.PermissionStatus | 'unknown';
 
 const CATEGORY_LABELS: Record<string, string> = {
   relationship: 'Relationship mode',
@@ -160,6 +163,8 @@ export default function FiltersCategoryScreen() {
   const [lat, setLat] = useState('');
   const [lon, setLon] = useState('');
   const [radiusKm, setRadiusKm] = useState('');
+  const [locationPermission, setLocationPermission] = useState<LocationPermission>('unknown');
+  const [locating, setLocating] = useState(false);
 
   const [religionSelf, setReligionSelf] = useState('');
   const [religionSeeking, setReligionSeeking] = useState<string[]>([]);
@@ -239,6 +244,27 @@ export default function FiltersCategoryScreen() {
     setMessage(null);
   }, [category]);
 
+  useEffect(() => {
+    let mounted = true;
+
+    const checkPermission = async () => {
+      if (category !== 'location') return;
+      try {
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (!mounted) return;
+        setLocationPermission(status);
+      } catch {
+        if (!mounted) return;
+        setLocationPermission('unknown');
+      }
+    };
+
+    checkPermission();
+    return () => {
+      mounted = false;
+    };
+  }, [category]);
+
   const hydrate = (filters: Filters) => {
     setRelationshipMode(filters.relationshipMode?.self ?? '');
     setGenderSelf(filters.gender?.self ?? '');
@@ -275,6 +301,49 @@ export default function FiltersCategoryScreen() {
       interestMap[pref.tag] = pref.importance;
     });
     setInterestsPrefs(interestMap);
+  };
+
+  const formatCoordinate = (value: string) => {
+    const parsed = Number(value);
+    if (Number.isNaN(parsed)) return value;
+    return parsed.toFixed(3);
+  };
+
+  const locationLabel = useMemo(() => {
+    if (lat && lon) {
+      return `Lat ${formatCoordinate(lat)} · Lon ${formatCoordinate(lon)}`;
+    }
+    if (locationPermission === 'denied') {
+      return 'Enable location';
+    }
+    return 'Locate';
+  }, [lat, lon, locationPermission]);
+
+  const handleUseLocation = async () => {
+    if (locating) return;
+    setMessage(null);
+    setLocating(true);
+    try {
+      let { status } = await Location.getForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        const request = await Location.requestForegroundPermissionsAsync();
+        status = request.status;
+      }
+      setLocationPermission(status);
+      if (status !== 'granted') {
+        setMessage('Location permission not granted.');
+        return;
+      }
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setLat(String(position.coords.latitude));
+      setLon(String(position.coords.longitude));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to get location');
+    } finally {
+      setLocating(false);
+    }
   };
 
   const buildPreferences = (prefs: Record<string, Importance>): TagPreference[] => {
@@ -601,26 +670,22 @@ export default function FiltersCategoryScreen() {
         {category === 'location' && (
           <Section title="Location">
             <View style={styles.inlineRow}>
-              <Input
-                label="Lat"
-                value={lat}
-                onChange={setLat}
-                borderColor={borderColor}
-                inputBg={inputBg}
-                placeholderColor={placeholderColor}
-                textColor={inputText}
-                labelColor={muted}
-              />
-              <Input
-                label="Lon"
-                value={lon}
-                onChange={setLon}
-                borderColor={borderColor}
-                inputBg={inputBg}
-                placeholderColor={placeholderColor}
-                textColor={inputText}
-                labelColor={muted}
-              />
+              <Pressable
+                onPress={handleUseLocation}
+                style={({ pressed }) => [
+                  styles.locationPill,
+                  { borderColor, backgroundColor: cardBg, opacity: locating ? 0.7 : 1 },
+                  pressed && !locating ? styles.locationPillPressed : null,
+                ]}
+              >
+                <ThemedText
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                  style={[styles.locationPillText, { color: muted }]}
+                >
+                  {locating ? 'Locating…' : locationLabel}
+                </ThemedText>
+              </Pressable>
               <Input
                 label="Radius km"
                 value={radiusKm}
@@ -1145,6 +1210,22 @@ const styles = StyleSheet.create({
   },
   chipText: {
     opacity: 0.8,
+  },
+  locationPill: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    justifyContent: 'center',
+  },
+  locationPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    opacity: 0.7,
+  },
+  locationPillPressed: {
+    transform: [{ scale: 0.98 }],
   },
   importanceRow: {
     flexDirection: 'row',
