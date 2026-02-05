@@ -182,6 +182,19 @@ export default function FiltersIndexScreen() {
     };
   }, [draft?.location?.lat, draft?.location?.lon]);
 
+  const ageSelf = useMemo(() => {
+    if (!account?.birthday) return null;
+    const birthDate = new Date(account.birthday);
+    if (Number.isNaN(birthDate.getTime())) return null;
+    const today = new Date();
+    let years = today.getFullYear() - birthDate.getFullYear();
+    const monthDiff = today.getMonth() - birthDate.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+      years -= 1;
+    }
+    return years;
+  }, [account?.birthday]);
+
   const summaries = useMemo<Record<FilterCategoryKey, string>>(() => {
     const filters = draft ?? {};
     const relationship = filters.relationshipMode?.self ?? 'Not set';
@@ -191,16 +204,18 @@ export default function FiltersIndexScreen() {
       : '';
     const gender = [genderSelf, genderSeeking].filter(Boolean).join(' · ') || 'Not set';
     const ageParts = [];
-    if (filters.age?.self !== undefined) ageParts.push(`Self: ${filters.age.self}`);
+    if (ageSelf !== null) ageParts.push(`You: ${ageSelf}`);
     if (filters.age?.min !== undefined && filters.age?.max !== undefined) {
       ageParts.push(`${filters.age.min}-${filters.age.max}`);
     }
     const age = ageParts.length ? ageParts.join(' · ') : 'Not set';
     const location =
-      locationName ||
-      (filters.location?.lat !== undefined
-        ? `Lat ${filters.location.lat} · Lon ${filters.location.lon} · ${filters.location.radiusKm}km`
-        : 'Not set');
+      locationName && filters.location?.radiusKm !== undefined
+        ? `${locationName} · ${filters.location.radiusKm}km`
+        : locationName ||
+          (filters.location?.lat !== undefined
+            ? `Lat ${filters.location.lat} · Lon ${filters.location.lon} · ${filters.location.radiusKm}km`
+            : 'Not set');
     const religionSelf = filters.religion?.self ? `Self: ${filters.religion.self}` : '';
     const religionSeeking = (filters.religion?.seeking ?? []).length
       ? `Seeking: ${(filters.religion?.seeking ?? []).join(', ')}`
@@ -242,7 +257,7 @@ export default function FiltersIndexScreen() {
       lifestyle,
       interests,
     };
-  }, [draft, locationName]);
+  }, [ageSelf, draft, locationName]);
 
   const categoryItems = useMemo(
     () =>

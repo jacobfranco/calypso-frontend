@@ -3,12 +3,12 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import {
   Account,
   clearToken,
-  createAccount,
+  createPhoneAccount,
   fetchMe,
   getStoredToken,
-  loginWithPassword,
   revokeToken,
   storeToken,
+  PhoneSignupRequest,
 } from '@/lib/api';
 
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
@@ -19,8 +19,7 @@ type AuthContextValue = {
   account: Account | null;
   error: string | null;
   refresh: () => Promise<void>;
-  login: (email: string, password: string) => Promise<void>;
-  signup: (name: string, email: string, password: string) => Promise<void>;
+  completePhoneSignup: (payload: PhoneSignupRequest) => Promise<{ token: string; account: Account }>;
   logout: () => Promise<void>;
 };
 
@@ -77,35 +76,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [token]);
 
-  const login = useCallback(async (email: string, password: string) => {
+  const completePhoneSignup = useCallback(async (payload: PhoneSignupRequest) => {
     setStatus('loading');
     setError(null);
     try {
-      const tokenResp = await loginWithPassword(email, password);
+      const tokenResp = await createPhoneAccount(payload);
       await storeToken(tokenResp.access_token);
       const me = await fetchMe(tokenResp.access_token);
       setToken(tokenResp.access_token);
       setAccount(me);
       setStatus('authenticated');
-    } catch (err) {
-      setToken(null);
-      setAccount(null);
-      setStatus('unauthenticated');
-      setError(err instanceof Error ? err.message : 'Login failed');
-      throw err;
-    }
-  }, []);
-
-  const signup = useCallback(async (name: string, email: string, password: string) => {
-    setStatus('loading');
-    setError(null);
-    try {
-      const tokenResp = await createAccount({ name, email, password });
-      await storeToken(tokenResp.access_token);
-      const me = await fetchMe(tokenResp.access_token);
-      setToken(tokenResp.access_token);
-      setAccount(me);
-      setStatus('authenticated');
+      return { token: tokenResp.access_token, account: me };
     } catch (err) {
       setToken(null);
       setAccount(null);
@@ -136,11 +117,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       account,
       error,
       refresh,
-      login,
-      signup,
+      completePhoneSignup,
       logout,
     }),
-    [account, error, login, logout, refresh, signup, status, token]
+    [account, completePhoneSignup, error, logout, refresh, status, token]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

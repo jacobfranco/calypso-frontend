@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
+import MultiSlider from '@ptomasroos/react-native-multi-slider';
 
 import { ThemedText } from '@/components/themed-text';
 import {
@@ -31,6 +32,8 @@ const IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
 ];
 
 const RELATIONSHIP_MODES = ['casual', 'serious'];
+const AGE_MIN = 18;
+const AGE_MAX = 99;
 
 type TagRole = 'self' | 'seeking';
 
@@ -155,9 +158,13 @@ export default function FiltersCategoryScreen() {
   const [genderSeeking, setGenderSeeking] = useState<string[]>([]);
   const [genderImportance, setGenderImportance] = useState<Importance>('NOT_IMPORTANT');
 
-  const [ageSelf, setAgeSelf] = useState('');
-  const [ageMin, setAgeMin] = useState('');
-  const [ageMax, setAgeMax] = useState('');
+  const ageSelf = useMemo(() => {
+    if (!account?.birthday) return null;
+    const birthDate = new Date(account.birthday);
+    if (Number.isNaN(birthDate.getTime())) return null;
+    return calculateAge(birthDate);
+  }, [account?.birthday]);
+  const [ageRange, setAgeRange] = useState<[number, number]>([AGE_MIN, AGE_MIN + 4]);
   const [ageImportance, setAgeImportance] = useState<Importance>('NOT_IMPORTANT');
 
   const [lat, setLat] = useState('');
@@ -240,7 +247,7 @@ export default function FiltersCategoryScreen() {
   useEffect(() => {
     if (!draft) return;
     hydrate(draft);
-  }, [draft]);
+  }, [draft, ageSelf]);
 
   useEffect(() => {
     setMessage(null);
@@ -273,9 +280,11 @@ export default function FiltersCategoryScreen() {
     setGenderSeeking(filters.gender?.seeking ?? []);
     setGenderImportance(filters.gender?.importance ?? 'NOT_IMPORTANT');
 
-    setAgeSelf(filters.age?.self !== undefined ? String(filters.age.self) : '');
-    setAgeMin(filters.age?.min !== undefined ? String(filters.age.min) : '');
-    setAgeMax(filters.age?.max !== undefined ? String(filters.age.max) : '');
+    if (filters.age?.min !== undefined && filters.age?.max !== undefined) {
+      setAgeRange([filters.age.min, filters.age.max]);
+    } else {
+      setAgeRange(defaultAgeRange(ageSelf));
+    }
     setAgeImportance(filters.age?.importance ?? 'NOT_IMPORTANT');
 
     setLat(filters.location?.lat !== undefined ? String(filters.location.lat) : '');
@@ -411,9 +420,9 @@ export default function FiltersCategoryScreen() {
         importance: genderImportance,
       },
       age: {
-        self: ageSelf === '' ? undefined : Number(ageSelf),
-        min: ageMin === '' ? undefined : Number(ageMin),
-        max: ageMax === '' ? undefined : Number(ageMax),
+        self: ageSelf ?? undefined,
+        min: ageRange[0],
+        max: ageRange[1],
         importance: ageImportance,
       },
       location: {
@@ -675,36 +684,32 @@ export default function FiltersCategoryScreen() {
 
         {category === 'age' && (
           <Section title="Age">
-            <View style={styles.inlineRow}>
-              <Input
-                label="Your age"
-                value={ageSelf}
-                onChange={setAgeSelf}
-                borderColor={borderColor}
-                inputBg={inputBg}
-                placeholderColor={placeholderColor}
-                textColor={inputText}
-                labelColor={muted}
-              />
-              <Input
-                label="Min"
-                value={ageMin}
-                onChange={setAgeMin}
-                borderColor={borderColor}
-                inputBg={inputBg}
-                placeholderColor={placeholderColor}
-                textColor={inputText}
-                labelColor={muted}
-              />
-              <Input
-                label="Max"
-                value={ageMax}
-                onChange={setAgeMax}
-                borderColor={borderColor}
-                inputBg={inputBg}
-                placeholderColor={placeholderColor}
-                textColor={inputText}
-                labelColor={muted}
+            <View style={styles.ageRow}>
+              <ThemedText style={[styles.label, { color: muted }]}>Your age</ThemedText>
+              <View style={[styles.ageValue, { borderColor, backgroundColor: inputBg }]}>
+                <ThemedText>
+                  {ageSelf !== null ? `${ageSelf}` : 'Not available'}
+                </ThemedText>
+              </View>
+            </View>
+            <View style={styles.sliderBlock}>
+              <View style={styles.sliderHeader}>
+                <ThemedText style={[styles.label, { color: muted }]}>Age range</ThemedText>
+                <ThemedText style={[styles.label, { color: muted }]}>
+                  {ageRange[0]} - {ageRange[1]}
+                </ThemedText>
+              </View>
+              <MultiSlider
+                values={ageRange}
+                min={AGE_MIN}
+                max={AGE_MAX}
+                step={1}
+                onValuesChange={(values) => setAgeRange([values[0], values[1]])}
+                selectedStyle={{ backgroundColor: inputText }}
+                unselectedStyle={{ backgroundColor: borderColor }}
+                markerStyle={{ backgroundColor: inputText, borderColor }}
+                trackStyle={styles.sliderTrack}
+                containerStyle={styles.sliderContainer}
               />
             </View>
             <ImportanceRow
@@ -1096,6 +1101,25 @@ function Input({
   );
 }
 
+function calculateAge(date: Date): number {
+  const today = new Date();
+  let years = today.getFullYear() - date.getFullYear();
+  const monthDiff = today.getMonth() - date.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < date.getDate())) {
+    years -= 1;
+  }
+  return years;
+}
+
+function defaultAgeRange(age: number | null): [number, number] {
+  if (age === null) {
+    return [AGE_MIN, Math.min(AGE_MIN + 4, AGE_MAX)];
+  }
+  const min = Math.max(AGE_MIN, age - 4);
+  const max = Math.min(AGE_MAX, age + 4);
+  return [min, Math.max(min, max)];
+}
+
 function ChipRow({
   options,
   selected,
@@ -1294,6 +1318,29 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingVertical: 8,
     paddingHorizontal: 10,
+  },
+  ageRow: {
+    gap: 6,
+  },
+  ageValue: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  sliderBlock: {
+    gap: 10,
+  },
+  sliderHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  sliderContainer: {
+    height: 32,
+  },
+  sliderTrack: {
+    height: 4,
+    borderRadius: 999,
   },
   saveButton: {
     paddingVertical: 14,

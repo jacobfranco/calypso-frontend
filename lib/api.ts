@@ -12,6 +12,8 @@ export type Account = {
   avatar?: string;
   avatar_static?: string;
   created_at?: string;
+  birthday?: string;
+  phone_number?: string;
 };
 
 export type Importance = 'NOT_IMPORTANT' | 'PREFERENCE' | 'DEALBREAKER';
@@ -78,11 +80,104 @@ export type SignupRequest = {
   locale?: string;
 };
 
+export type PhoneSignupRequest = {
+  name: string;
+  phone_number: string;
+  birthday: string;
+  verification_token: string;
+  locale?: string;
+};
+
+type PhoneCodeResponse = {
+  verification_token: string;
+};
+
 export async function createAccount(payload: SignupRequest): Promise<TokenResponse> {
   const body = {
     name: payload.name,
     email: payload.email,
     password: payload.password,
+    agreement: true,
+    locale: payload.locale ?? 'en-US',
+  };
+
+  const res = await fetch(`${API_BASE_URL}/api/accounts`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  const json = (await res.json()) as TokenResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (!('access_token' in json)) {
+    throw new Error('Unexpected response from /api/accounts');
+  }
+
+  return json;
+}
+
+export type PhoneRequestResponse = {
+  code?: string;
+  fallback?: boolean;
+};
+
+export async function requestPhoneCode(phoneNumber: string): Promise<PhoneRequestResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/phone/request`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ phone_number: phoneNumber }),
+  });
+
+  if (!res.ok) {
+    const json = (await res.json()) as ErrorDetails;
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (res.status === 204) return {};
+  try {
+    return (await res.json()) as PhoneRequestResponse;
+  } catch {
+    return {};
+  }
+}
+
+export async function verifyPhoneCode(
+  phoneNumber: string,
+  code: string
+): Promise<PhoneCodeResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/phone/verify`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ phone_number: phoneNumber, code }),
+  });
+
+  const json = (await res.json()) as PhoneCodeResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (!('verification_token' in json)) {
+    throw new Error('Unexpected response from /api/accounts/phone/verify');
+  }
+
+  return json;
+}
+
+export async function createPhoneAccount(payload: PhoneSignupRequest): Promise<TokenResponse> {
+  const body = {
+    name: payload.name,
+    phone_number: payload.phone_number,
+    birthday: payload.birthday,
+    verification_token: payload.verification_token,
     agreement: true,
     locale: payload.locale ?? 'en-US',
   };
