@@ -61,7 +61,6 @@ export type Filters = {
   religion?: OneToManyFilter;
   politics?: OneToManyFilter;
   lifestyle?: ManyToManyFilter;
-  interests?: ManyToManyFilter;
 };
 
 export type TagsResponse = Record<string, string[]>;

@@ -34,7 +34,10 @@ const STEPS = [
   'name',
   'dob',
   'gender',
+  'religion',
+  'politics',
   'relationship',
+  'lifestyle',
   'location',
 ] as const;
 
@@ -69,7 +72,10 @@ export default function OnboardingScreen() {
   const [name, setName] = useState('');
   const [birthday, setBirthday] = useState<Date | null>(null);
   const [gender, setGender] = useState('');
+  const [religion, setReligion] = useState('');
+  const [politics, setPolitics] = useState('');
   const [relationshipMode, setRelationshipMode] = useState('');
+  const [lifestyleSelections, setLifestyleSelections] = useState<string[]>([]);
   const [radiusKm, setRadiusKm] = useState('');
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
@@ -78,6 +84,9 @@ export default function OnboardingScreen() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [genderOptions, setGenderOptions] = useState<string[]>([]);
+  const [religionOptions, setReligionOptions] = useState<string[]>([]);
+  const [politicsOptions, setPoliticsOptions] = useState<string[]>([]);
+  const [lifestyleOptions, setLifestyleOptions] = useState<string[]>([]);
 
   const handleNameChange = (text: string) => {
     setName(text);
@@ -124,18 +133,28 @@ export default function OnboardingScreen() {
 
   useEffect(() => {
     let mounted = true;
-    const loadGender = async () => {
+    const loadTags = async () => {
       try {
-        const tags = await fetchTags('gender');
+        const [genderTags, religionTags, politicsTags, lifestyleTagGroups] = await Promise.all([
+          fetchTags('gender'),
+          fetchTags('religion'),
+          fetchTags('politics'),
+          fetchTags('lifestyle'),
+        ]);
         if (!mounted) return;
-        const list = Object.values(tags).flat();
-        setGenderOptions(list);
+        setGenderOptions(Object.values(genderTags).flat());
+        setReligionOptions(Object.values(religionTags).flat());
+        setPoliticsOptions(Object.values(politicsTags).flat());
+        setLifestyleOptions(Object.values(lifestyleTagGroups).flat());
       } catch {
         if (!mounted) return;
         setGenderOptions([]);
+        setReligionOptions([]);
+        setPoliticsOptions([]);
+        setLifestyleOptions([]);
       }
     };
-    loadGender();
+    loadTags();
     return () => {
       mounted = false;
     };
@@ -181,12 +200,29 @@ export default function OnboardingScreen() {
     if (step === 'name') return name.trim().length > 0;
     if (step === 'dob') return age !== null && age >= MIN_AGE;
     if (step === 'gender') return gender.length > 0;
+    if (step === 'religion') return religion.length > 0;
+    if (step === 'politics') return politics.length > 0;
     if (step === 'relationship') return relationshipMode.length > 0;
+    if (step === 'lifestyle') return true;
     if (step === 'location') {
       return lat !== null && lon !== null && Number(radiusKm) > 0;
     }
     return false;
-  }, [age, code, gender, lat, loading, lon, name, phone, radiusKm, relationshipMode, step]);
+  }, [
+    age,
+    code,
+    gender,
+    lat,
+    loading,
+    lon,
+    name,
+    phone,
+    politics,
+    radiusKm,
+    religion,
+    relationshipMode,
+    step,
+  ]);
 
   const handleBack = () => {
     setMessage(null);
@@ -269,6 +305,8 @@ export default function OnboardingScreen() {
         const filtersPayload: Filters = {
           relationshipMode: { self: relationshipMode },
           gender: { self: gender },
+          religion: { self: religion },
+          politics: { self: politics },
           age: {
             self: age,
             min: minAge,
@@ -281,6 +319,9 @@ export default function OnboardingScreen() {
             radiusKm: Number(radiusKm),
           },
         };
+        if (lifestyleSelections.length) {
+          filtersPayload.lifestyle = { self: lifestyleSelections };
+        }
 
         await postFilters(account.id, token, filtersPayload);
       } catch (error) {
@@ -354,7 +395,10 @@ export default function OnboardingScreen() {
     if (step === 'name') return 'Your name';
     if (step === 'dob') return 'Your birthday';
     if (step === 'gender') return 'Your gender';
+    if (step === 'religion') return 'Your religion';
+    if (step === 'politics') return 'Your politics';
     if (step === 'relationship') return 'Relationship mode';
+    if (step === 'lifestyle') return 'Lifestyle boundaries';
     if (step === 'location') return 'Where are you';
     return 'Onboarding';
   }, [step]);
@@ -474,6 +518,50 @@ export default function OnboardingScreen() {
       );
     }
 
+    if (step === 'religion') {
+      const options = religionOptions.length ? religionOptions : ['prefer_not_to_say'];
+      return (
+        <View style={styles.section}>
+          <ThemedText style={[styles.label, { color: muted }]}>Select your religion</ThemedText>
+          <View style={styles.optionRow}>
+            {options.map((option) => (
+              <OptionPill
+                key={option}
+                label={option}
+                selected={religion === option}
+                onPress={() => setReligion(option)}
+                borderColor={borderColor}
+                activeBg={cardBg}
+              />
+            ))}
+          </View>
+        </View>
+      );
+    }
+
+    if (step === 'politics') {
+      const options = politicsOptions.length
+        ? politicsOptions
+        : ['apolitical', 'prefer_not_to_say'];
+      return (
+        <View style={styles.section}>
+          <ThemedText style={[styles.label, { color: muted }]}>Select your politics</ThemedText>
+          <View style={styles.optionRow}>
+            {options.map((option) => (
+              <OptionPill
+                key={option}
+                label={option}
+                selected={politics === option}
+                onPress={() => setPolitics(option)}
+                borderColor={borderColor}
+                activeBg={cardBg}
+              />
+            ))}
+          </View>
+        </View>
+      );
+    }
+
     if (step === 'relationship') {
       return (
         <View style={styles.section}>
@@ -485,6 +573,28 @@ export default function OnboardingScreen() {
                 label={capitalize(option)}
                 selected={relationshipMode === option}
                 onPress={() => setRelationshipMode(option)}
+                borderColor={borderColor}
+                activeBg={cardBg}
+              />
+            ))}
+          </View>
+        </View>
+      );
+    }
+
+    if (step === 'lifestyle') {
+      return (
+        <View style={styles.section}>
+          <ThemedText style={[styles.label, { color: muted }]}>
+            Select your boundaries (optional)
+          </ThemedText>
+          <View style={styles.optionRow}>
+            {lifestyleOptions.map((option) => (
+              <OptionPill
+                key={option}
+                label={option}
+                selected={lifestyleSelections.includes(option)}
+                onPress={() => setLifestyleSelections((prev) => toggleItem(prev, option))}
                 borderColor={borderColor}
                 activeBg={cardBg}
               />
@@ -655,6 +765,13 @@ function formatPlacemark(placemark: Location.LocationGeocodedAddress) {
 
 function capitalize(value: string) {
   return value.length ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
+}
+
+function toggleItem(list: string[], value: string) {
+  if (list.includes(value)) {
+    return list.filter((item) => item !== value);
+  }
+  return [...list, value];
 }
 
 const styles = StyleSheet.create({

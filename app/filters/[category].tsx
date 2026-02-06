@@ -49,7 +49,6 @@ const CATEGORY_LABELS: Record<string, string> = {
   religion: 'Religion',
   politics: 'Politics',
   lifestyle: 'Lifestyle',
-  interests: 'Interests',
 };
 
 function flattenTags(groups: TagsResponse | null): string[] {
@@ -186,14 +185,10 @@ export default function FiltersCategoryScreen() {
   const [lifestyleSelf, setLifestyleSelf] = useState<string[]>([]);
   const [lifestylePrefs, setLifestylePrefs] = useState<Record<string, Importance>>({});
 
-  const [interestsSelf, setInterestsSelf] = useState<string[]>([]);
-  const [interestsPrefs, setInterestsPrefs] = useState<Record<string, Importance>>({});
-
   const [genderTags, setGenderTags] = useState<TagsResponse | null>(null);
   const [religionTags, setReligionTags] = useState<TagsResponse | null>(null);
   const [politicsTags, setPoliticsTags] = useState<TagsResponse | null>(null);
   const [lifestyleTags, setLifestyleTags] = useState<TagsResponse | null>(null);
-  const [interestTags, setInterestTags] = useState<TagsResponse | null>(null);
 
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [activeRole, setActiveRole] = useState<TagRole>('self');
@@ -203,7 +198,6 @@ export default function FiltersCategoryScreen() {
   const religionList = useMemo(() => flattenTags(religionTags), [religionTags]);
   const politicsList = useMemo(() => flattenTags(politicsTags), [politicsTags]);
   const lifestyleList = useMemo(() => flattenTags(lifestyleTags), [lifestyleTags]);
-  const interestList = useMemo(() => flattenTags(interestTags), [interestTags]);
 
   useEffect(() => {
     let mounted = true;
@@ -212,20 +206,18 @@ export default function FiltersCategoryScreen() {
       if (!category) return;
       setTagStatus('loading');
       try {
-        if (['gender', 'religion', 'politics', 'lifestyle', 'interests'].includes(category)) {
+        if (['gender', 'religion', 'politics', 'lifestyle'].includes(category)) {
           const requests = [] as Promise<TagsResponse>[];
           if (category === 'gender') requests.push(fetchTags('gender'));
           if (category === 'religion') requests.push(fetchTags('religion'));
           if (category === 'politics') requests.push(fetchTags('politics'));
           if (category === 'lifestyle') requests.push(fetchTags('lifestyle'));
-          if (category === 'interests') requests.push(fetchTags('interests'));
           const [result] = await Promise.all(requests);
           if (!mounted) return;
           if (category === 'gender') setGenderTags(result);
           if (category === 'religion') setReligionTags(result);
           if (category === 'politics') setPoliticsTags(result);
           if (category === 'lifestyle') setLifestyleTags(result);
-          if (category === 'interests') setInterestTags(result);
         } else {
           setTagStatus('idle');
           return;
@@ -305,13 +297,6 @@ export default function FiltersCategoryScreen() {
       lifestyleMap[pref.tag] = pref.importance;
     });
     setLifestylePrefs(lifestyleMap);
-
-    setInterestsSelf(filters.interests?.self ?? []);
-    const interestMap: Record<string, Importance> = {};
-    (filters.interests?.preferences ?? []).forEach((pref) => {
-      interestMap[pref.tag] = pref.importance;
-    });
-    setInterestsPrefs(interestMap);
   };
 
   const formatCoordinate = (value: string) => {
@@ -457,15 +442,6 @@ export default function FiltersCategoryScreen() {
       };
     }
 
-    if (interestsSelf.length || Object.keys(interestsPrefs).length) {
-      payload.interests = {
-        self: interestsSelf.length ? interestsSelf : undefined,
-        preferences: Object.keys(interestsPrefs).length
-          ? buildPreferences(interestsPrefs)
-          : undefined,
-      };
-    }
-
     updateDraft(payload);
     router.back();
   };
@@ -480,10 +456,6 @@ export default function FiltersCategoryScreen() {
       setActiveImportance(importance);
       return;
     }
-    if (category === 'interests') {
-      const importance = interestsPrefs[tag] ?? 'NOT_IMPORTANT';
-      setActiveImportance(importance);
-    }
   };
 
   const applyTagConfig = () => {
@@ -493,16 +465,6 @@ export default function FiltersCategoryScreen() {
       if (activeRole === 'seeking') {
         setLifestyleSelf(lifestyleSelf.filter((t) => t !== activeTag));
         setLifestylePrefs((prev) => ({
-          ...prev,
-          [activeTag]: activeImportance,
-        }));
-      }
-    }
-
-    if (category === 'interests') {
-      if (activeRole === 'seeking') {
-        setInterestsSelf(interestsSelf.filter((t) => t !== activeTag));
-        setInterestsPrefs((prev) => ({
           ...prev,
           [activeTag]: activeImportance,
         }));
@@ -520,13 +482,6 @@ export default function FiltersCategoryScreen() {
         return next;
       });
       return;
-    }
-    if (category === 'interests') {
-      setInterestsPrefs((prev) => {
-        const next = { ...prev };
-        delete next[tag];
-        return next;
-      });
     }
   };
 
@@ -586,27 +541,6 @@ export default function FiltersCategoryScreen() {
         }
       }
       return;
-    }
-
-    if (category === 'interests') {
-      if (activeRole === 'self') {
-        setInterestsSelf(toggleItem(interestsSelf, tag));
-        setInterestsPrefs((prev) => {
-          const next = { ...prev };
-          delete next[tag];
-          return next;
-        });
-      } else {
-        if (interestsPrefs[tag]) {
-          openSeekingConfig(tag);
-        } else {
-          setInterestsSelf(interestsSelf.filter((t) => t !== tag));
-          setInterestsPrefs((prev) => ({
-            ...prev,
-            [tag]: activeImportance,
-          }));
-        }
-      }
     }
   };
 
@@ -840,26 +774,6 @@ export default function FiltersCategoryScreen() {
           />
         )}
 
-        {category === 'interests' && (
-          <TagSections
-            selfLabel="Self"
-            seekingLabel="Seeking"
-            allLabel="All tags"
-            selfTags={interestsSelf}
-            seekingTags={Object.keys(interestsPrefs)}
-            allTags={interestList}
-            importance={activeImportance}
-            importanceByTag={interestsPrefs}
-            activeRole={activeRole}
-            onRoleChange={setActiveRole}
-            onSelectTag={handleSelectTag}
-            roleActiveBg={roleActiveBg}
-            borderColor={borderColor}
-            palette={importancePalette}
-            muted={muted}
-          />
-        )}
-
         <Pressable style={[styles.saveButton, { backgroundColor: primaryBg }]} onPress={handleSave}>
           <ThemedText style={[styles.saveButtonText, { color: primaryText }]}>
             Apply
@@ -876,9 +790,6 @@ export default function FiltersCategoryScreen() {
         onRemove={() => {
           if (!activeTag || !category) return;
           if (category === 'lifestyle') {
-            removePreference(activeTag);
-          }
-          if (category === 'interests') {
             removePreference(activeTag);
           }
           setActiveTag(null);

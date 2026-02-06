@@ -17,7 +17,6 @@ const LOCATION_CATEGORY = { key: 'location', label: 'Location' };
 const RELIGION_CATEGORY = { key: 'religion', label: 'Religion' };
 const POLITICS_CATEGORY = { key: 'politics', label: 'Politics' };
 const LIFESTYLE_CATEGORY = { key: 'lifestyle', label: 'Lifestyle' };
-const INTERESTS_CATEGORY = { key: 'interests', label: 'Interests' };
 
 const FILTER_CATEGORIES = [
   RELATIONSHIP_CATEGORY,
@@ -27,7 +26,6 @@ const FILTER_CATEGORIES = [
   RELIGION_CATEGORY,
   POLITICS_CATEGORY,
   LIFESTYLE_CATEGORY,
-  INTERESTS_CATEGORY,
 ] as const;
 
 type FilterCategoryKey = (typeof FILTER_CATEGORIES)[number]['key'];
@@ -236,17 +234,6 @@ export default function FiltersIndexScreen() {
           .filter(Boolean)
           .join(' · ')
       : 'Not set';
-    const interests = filters.interests?.self?.length || filters.interests?.preferences?.length
-      ? [
-          filters.interests?.self?.length ? `Self: ${filters.interests?.self?.join(', ')}` : '',
-          filters.interests?.preferences?.length
-            ? `Seeking: ${filters.interests?.preferences?.map((pref) => pref.tag).join(', ')}`
-            : '',
-        ]
-          .filter(Boolean)
-          .join(' · ')
-      : 'Not set';
-
     return {
       relationship,
       gender,
@@ -255,7 +242,6 @@ export default function FiltersIndexScreen() {
       religion,
       politics,
       lifestyle,
-      interests,
     };
   }, [ageSelf, draft, locationName]);
 
