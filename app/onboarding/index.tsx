@@ -60,7 +60,7 @@ Notifications.setNotificationHandler({
 type LocationPermission = Location.PermissionStatus | 'unknown';
 
 export default function OnboardingScreen() {
-  const { completePhoneSignup } = useAuth();
+  const { completePhoneSignup, loginWithToken } = useAuth();
   const nameInputRef = useRef<TextInput>(null);
   const [stepIndex, setStepIndex] = useState(0);
   const step = STEPS[stepIndex];
@@ -69,6 +69,7 @@ export default function OnboardingScreen() {
   const [code, setCode] = useState('');
   const [verificationToken, setVerificationToken] = useState('');
   const [fallbackCode, setFallbackCode] = useState('');
+  const [existingAccount, setExistingAccount] = useState(false);
   const [name, setName] = useState('');
   const [birthday, setBirthday] = useState<Date | null>(null);
   const [gender, setGender] = useState('');
@@ -100,6 +101,7 @@ export default function OnboardingScreen() {
     setCode('');
     setVerificationToken('');
     setFallbackCode('');
+    setExistingAccount(false);
     setStepIndex(STEPS.indexOf('phone'));
   };
 
@@ -256,6 +258,7 @@ export default function OnboardingScreen() {
         } else {
           setFallbackCode('');
         }
+        setExistingAccount(Boolean(result.existing));
         setStepIndex((prev) => prev + 1);
       } catch (error) {
         setMessage(error instanceof Error ? error.message : 'Unable to send code');
@@ -269,6 +272,10 @@ export default function OnboardingScreen() {
       setLoading(true);
       try {
         const result = await verifyPhoneCode(phone.trim(), code.trim());
+        if ('access_token' in result) {
+          await loginWithToken(result.access_token);
+          return;
+        }
         setVerificationToken(result.verification_token);
         setStepIndex((prev) => prev + 1);
       } catch (error) {
@@ -448,7 +455,9 @@ export default function OnboardingScreen() {
             maxLength={CODE_LENGTH}
           />
           <ThemedText style={[styles.helperText, { color: muted }]}>
-            Sent to {phone || 'your phone'}.
+            {existingAccount
+              ? "We'll log you in after you confirm this code."
+              : `Sent to ${phone || 'your phone'}.`}
           </ThemedText>
         </View>
       );

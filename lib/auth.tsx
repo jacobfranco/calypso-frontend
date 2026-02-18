@@ -20,6 +20,7 @@ type AuthContextValue = {
   error: string | null;
   refresh: () => Promise<void>;
   completePhoneSignup: (payload: PhoneSignupRequest) => Promise<{ token: string; account: Account }>;
+  loginWithToken: (token: string) => Promise<{ token: string; account: Account }>;
   logout: () => Promise<void>;
 };
 
@@ -96,6 +97,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const loginWithToken = useCallback(async (tokenValue: string) => {
+    setStatus('loading');
+    setError(null);
+    try {
+      await storeToken(tokenValue);
+      const me = await fetchMe(tokenValue);
+      setToken(tokenValue);
+      setAccount(me);
+      setStatus('authenticated');
+      return { token: tokenValue, account: me };
+    } catch (err) {
+      await clearToken();
+      setToken(null);
+      setAccount(null);
+      setStatus('unauthenticated');
+      setError(err instanceof Error ? err.message : 'Login failed');
+      throw err;
+    }
+  }, []);
+
   const logout = useCallback(async () => {
     if (token) {
       try {
@@ -118,9 +139,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       error,
       refresh,
       completePhoneSignup,
+      loginWithToken,
       logout,
     }),
-    [account, completePhoneSignup, error, logout, refresh, status, token]
+    [account, completePhoneSignup, error, loginWithToken, logout, refresh, status, token]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

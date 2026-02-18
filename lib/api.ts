@@ -65,7 +65,7 @@ export type Filters = {
 
 export type TagsResponse = Record<string, string[]>;
 
-type TokenResponse = {
+export type TokenResponse = {
   access_token: string;
   token_type: string;
   scope: string;
@@ -123,6 +123,7 @@ export async function createAccount(payload: SignupRequest): Promise<TokenRespon
 export type PhoneRequestResponse = {
   code?: string;
   fallback?: boolean;
+  existing?: boolean;
 };
 
 export async function requestPhoneCode(phoneNumber: string): Promise<PhoneRequestResponse> {
@@ -147,10 +148,12 @@ export async function requestPhoneCode(phoneNumber: string): Promise<PhoneReques
   }
 }
 
+export type PhoneVerifyResponse = TokenResponse | PhoneCodeResponse;
+
 export async function verifyPhoneCode(
   phoneNumber: string,
   code: string
-): Promise<PhoneCodeResponse> {
+): Promise<PhoneVerifyResponse> {
   const res = await fetch(`${API_BASE_URL}/api/accounts/phone/verify`, {
     method: 'POST',
     headers: {
@@ -164,7 +167,7 @@ export async function verifyPhoneCode(
     throw new Error(extractErrorMessage(json, res.status));
   }
 
-  if (!('verification_token' in json)) {
+  if (!('verification_token' in json) && !('access_token' in json)) {
     throw new Error('Unexpected response from /api/accounts/phone/verify');
   }
 
