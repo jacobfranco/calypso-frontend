@@ -14,6 +14,7 @@ import {
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
+import MultiSlider from '@ptomasroos/react-native-multi-slider';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -47,6 +48,10 @@ const RELATIONSHIP_OPTIONS = ['casual', 'serious'];
 const MIN_AGE = 18;
 const MAX_AGE = 99;
 const CODE_LENGTH = 6;
+const RADIUS_MIN = 1;
+const RADIUS_MAX = 100;
+const COUNTRY_RADIUS_KM = 3000;
+const WORLDWIDE_RADIUS_KM = 30000;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -72,12 +77,16 @@ export default function OnboardingScreen() {
   const [existingAccount, setExistingAccount] = useState(false);
   const [name, setName] = useState('');
   const [birthday, setBirthday] = useState<Date | null>(null);
+  const [ageRange, setAgeRange] = useState<[number, number]>([MIN_AGE, MIN_AGE + 4]);
   const [gender, setGender] = useState('');
+  const [genderSeeking, setGenderSeeking] = useState<string[]>([]);
   const [religion, setReligion] = useState('');
   const [politics, setPolitics] = useState('');
   const [relationshipMode, setRelationshipMode] = useState('');
   const [lifestyleSelections, setLifestyleSelections] = useState<string[]>([]);
-  const [radiusKm, setRadiusKm] = useState('');
+  const [locationScope, setLocationScope] = useState<'nearby' | 'country' | 'worldwide'>('nearby');
+  const [radiusUnit, setRadiusUnit] = useState<'mi' | 'km'>('mi');
+  const [radiusValue, setRadiusValue] = useState(25);
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
   const [locationPermission, setLocationPermission] = useState<LocationPermission>('unknown');
@@ -194,6 +203,11 @@ export default function OnboardingScreen() {
     return calculateAge(birthday);
   }, [birthday]);
 
+  useEffect(() => {
+    if (age === null) return;
+    setAgeRange(defaultAgeRange(age));
+  }, [age]);
+
   const canContinue = useMemo(() => {
     if (loading) return false;
     if (step === 'welcome') return true;
@@ -207,20 +221,23 @@ export default function OnboardingScreen() {
     if (step === 'relationship') return relationshipMode.length > 0;
     if (step === 'lifestyle') return true;
     if (step === 'location') {
-      return lat !== null && lon !== null && Number(radiusKm) > 0;
+      if (locationScope === 'worldwide') return true;
+      if (locationScope === 'country') return lat !== null && lon !== null;
+      return lat !== null && lon !== null && radiusValue >= RADIUS_MIN;
     }
     return false;
   }, [
     age,
     code,
     gender,
+    locationScope,
     lat,
     loading,
     lon,
     name,
     phone,
     politics,
-    radiusKm,
+    radiusValue,
     religion,
     relationshipMode,
     step,
@@ -308,10 +325,21 @@ export default function OnboardingScreen() {
           verification_token: verificationToken,
         });
 
-        const [minAge, maxAge] = defaultAgeRange(age);
+        const [minAge, maxAge] = ageRange;
+        const radiusKm =
+          locationScope === 'nearby'
+            ? radiusUnit === 'mi'
+              ? radiusValue * 1.60934
+              : radiusValue
+            : locationScope === 'country'
+              ? COUNTRY_RADIUS_KM
+              : WORLDWIDE_RADIUS_KM;
         const filtersPayload: Filters = {
           relationshipMode: { self: relationshipMode },
-          gender: { self: gender },
+          gender: {
+            self: gender,
+            seeking: genderSeeking.length ? genderSeeking : undefined,
+          },
           religion: { self: religion },
           politics: { self: politics },
           age: {
@@ -320,12 +348,14 @@ export default function OnboardingScreen() {
             max: maxAge,
             importance: 'NOT_IMPORTANT',
           },
-          location: {
+        };
+        if (locationScope !== 'worldwide') {
+          filtersPayload.location = {
             lat: lat ?? undefined,
             lon: lon ?? undefined,
-            radiusKm: Number(radiusKm),
-          },
-        };
+            radiusKm,
+          };
+        }
         if (lifestyleSelections.length) {
           filtersPayload.lifestyle = { self: lifestyleSelections };
         }
@@ -498,6 +528,26 @@ export default function OnboardingScreen() {
               onChange={handleDateChange}
             />
           </View>
+          <View style={styles.sliderBlock}>
+            <View style={styles.sliderHeader}>
+              <ThemedText style={[styles.label, { color: muted }]}>Age range</ThemedText>
+              <ThemedText style={[styles.label, { color: muted }]}>
+                {ageRange[0]} - {ageRange[1]}
+              </ThemedText>
+            </View>
+            <MultiSlider
+              values={ageRange}
+              min={MIN_AGE}
+              max={MAX_AGE}
+              step={1}
+              onValuesChange={(values) => setAgeRange([values[0], values[1]])}
+              selectedStyle={{ backgroundColor: inputText }}
+              unselectedStyle={{ backgroundColor: borderColor }}
+              markerStyle={{ backgroundColor: inputText, borderColor }}
+              trackStyle={styles.sliderTrack}
+              containerStyle={styles.sliderContainer}
+            />
+          </View>
           {age !== null && age < MIN_AGE ? (
             <ThemedText style={[styles.errorText, { color: muted }]}>
               You need to be at least 18 to sign up.
@@ -510,7 +560,7 @@ export default function OnboardingScreen() {
     if (step === 'gender') {
       return (
         <View style={styles.section}>
-          <ThemedText style={[styles.label, { color: muted }]}>Select your gender</ThemedText>
+          <ThemedText style={[styles.label, { color: muted }]}>You are</ThemedText>
           <View style={styles.optionRow}>
             {(genderOptions.length ? genderOptions : ['Woman', 'Man', 'Non-binary']).map((option) => (
               <OptionPill
@@ -518,6 +568,19 @@ export default function OnboardingScreen() {
                 label={option}
                 selected={gender === option}
                 onPress={() => setGender(option)}
+                borderColor={borderColor}
+                activeBg={cardBg}
+              />
+            ))}
+          </View>
+          <ThemedText style={[styles.label, { color: muted }]}>Seeking</ThemedText>
+          <View style={styles.optionRow}>
+            {(genderOptions.length ? genderOptions : ['Woman', 'Man', 'Non-binary']).map((option) => (
+              <OptionPill
+                key={`seeking-${option}`}
+                label={option}
+                selected={genderSeeking.includes(option)}
+                onPress={() => setGenderSeeking((prev) => toggleItem(prev, option))}
                 borderColor={borderColor}
                 activeBg={cardBg}
               />
@@ -617,6 +680,22 @@ export default function OnboardingScreen() {
       return (
         <View style={styles.section}>
           <ThemedText style={[styles.label, { color: muted }]}>Location</ThemedText>
+          <View style={styles.optionRow}>
+            {[
+              { value: 'nearby', label: 'Nearby' },
+              { value: 'country', label: 'My country' },
+              { value: 'worldwide', label: 'Worldwide' },
+            ].map((option) => (
+              <OptionPill
+                key={option.value}
+                label={option.label}
+                selected={locationScope === option.value}
+                onPress={() => setLocationScope(option.value as typeof locationScope)}
+                borderColor={borderColor}
+                activeBg={cardBg}
+              />
+            ))}
+          </View>
           <Pressable
             onPress={handleUseLocation}
             style={({ pressed }) => [
@@ -633,19 +712,53 @@ export default function OnboardingScreen() {
               {locationLabel}
             </ThemedText>
           </Pressable>
-          <View style={styles.radiusRow}>
-            <View style={styles.radiusInput}>
-              <ThemedText style={[styles.label, { color: muted }]}>Radius (km)</ThemedText>
-              <TextInput
-                value={radiusKm}
-                onChangeText={setRadiusKm}
-                keyboardType="numeric"
-                placeholder="25"
-                placeholderTextColor={placeholderColor}
-                style={[styles.input, { borderColor, backgroundColor: inputBg, color: inputText }]}
+          {locationScope === 'nearby' && (
+            <View style={styles.sliderBlock}>
+              <View style={styles.sliderHeader}>
+                <ThemedText style={[styles.label, { color: muted }]}>Radius</ThemedText>
+                <ThemedText style={[styles.label, { color: muted }]}>
+                  {radiusValue} {radiusUnit}
+                </ThemedText>
+              </View>
+              <MultiSlider
+                values={[radiusValue]}
+                min={RADIUS_MIN}
+                max={RADIUS_MAX}
+                step={1}
+                onValuesChange={(values) => setRadiusValue(values[0])}
+                selectedStyle={{ backgroundColor: inputText }}
+                unselectedStyle={{ backgroundColor: borderColor }}
+                markerStyle={{ backgroundColor: inputText, borderColor }}
+                trackStyle={styles.sliderTrack}
+                containerStyle={styles.sliderContainer}
               />
+              <View style={styles.optionRow}>
+                {[
+                  { value: 'mi', label: 'Miles' },
+                  { value: 'km', label: 'Kilometers' },
+                ].map((option) => (
+                  <OptionPill
+                    key={option.value}
+                    label={option.label}
+                    selected={radiusUnit === option.value}
+                    onPress={() => setRadiusUnit(option.value as typeof radiusUnit)}
+                    borderColor={borderColor}
+                    activeBg={cardBg}
+                  />
+                ))}
+              </View>
             </View>
-          </View>
+          )}
+          {locationScope === 'country' && (
+            <ThemedText style={[styles.helperText, { color: muted }]}>
+              We&apos;ll use a country-sized radius from your location.
+            </ThemedText>
+          )}
+          {locationScope === 'worldwide' && (
+            <ThemedText style={[styles.helperText, { color: muted }]}>
+              Search is global, no radius needed.
+            </ThemedText>
+          )}
         </View>
       );
     }
@@ -895,10 +1008,20 @@ const styles = StyleSheet.create({
   locationPillPressed: {
     transform: [{ scale: 0.98 }],
   },
-  radiusRow: {
+  sliderBlock: {
     gap: 8,
   },
-  radiusInput: {
-    flex: 1,
+  sliderHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sliderContainer: {
+    marginHorizontal: -6,
+    marginTop: 6,
+  },
+  sliderTrack: {
+    height: 4,
+    borderRadius: 999,
   },
 });
