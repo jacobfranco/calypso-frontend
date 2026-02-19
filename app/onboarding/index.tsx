@@ -22,6 +22,7 @@ import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
   Filters,
+  Importance,
   fetchTags,
   postFilters,
   requestPhoneCode,
@@ -46,6 +47,11 @@ const STEPS = [
 type StepKey = (typeof STEPS)[number];
 
 const RELATIONSHIP_OPTIONS = ['casual', 'serious'];
+const ALIGNMENT_IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
+  { label: 'Not important', value: 'NOT_IMPORTANT' },
+  { label: 'Nice to have', value: 'PREFERENCE' },
+  { label: 'Important', value: 'DEALBREAKER' },
+];
 const MIN_AGE = 18;
 const MAX_AGE = 99;
 const CODE_LENGTH = 6;
@@ -82,7 +88,9 @@ export default function OnboardingScreen() {
   const [gender, setGender] = useState('');
   const [genderSeeking, setGenderSeeking] = useState<string[]>([]);
   const [religion, setReligion] = useState('');
+  const [religionImportance, setReligionImportance] = useState<Importance>('NOT_IMPORTANT');
   const [politics, setPolitics] = useState('');
+  const [politicsImportance, setPoliticsImportance] = useState<Importance>('NOT_IMPORTANT');
   const [relationshipMode, setRelationshipMode] = useState('');
   const [lifestyleSelections, setLifestyleSelections] = useState<string[]>([]);
   const [locationScope, setLocationScope] = useState<'nearby' | 'country' | 'worldwide'>('nearby');
@@ -341,8 +349,8 @@ export default function OnboardingScreen() {
             self: gender,
             seeking: genderSeeking.length ? genderSeeking : undefined,
           },
-          religion: { self: religion },
-          politics: { self: politics },
+          religion: { self: religion, importance: religionImportance },
+          politics: { self: politics, importance: politicsImportance },
           age: {
             self: age,
             min: minAge,
@@ -603,6 +611,21 @@ export default function OnboardingScreen() {
               />
             ))}
           </View>
+          <ThemedText style={[styles.label, { color: muted }]}>
+            How important is religious alignment?
+          </ThemedText>
+          <View style={styles.optionRow}>
+            {ALIGNMENT_IMPORTANCE_OPTIONS.map((option) => (
+              <OptionPill
+                key={option.value}
+                label={option.label}
+                selected={religionImportance === option.value}
+                onPress={() => setReligionImportance(option.value)}
+                borderColor={borderColor}
+                activeBg={cardBg}
+              />
+            ))}
+          </View>
         </View>
       );
     }
@@ -621,6 +644,21 @@ export default function OnboardingScreen() {
                 label={option}
                 selected={politics === option}
                 onPress={() => setPolitics(option)}
+                borderColor={borderColor}
+                activeBg={cardBg}
+              />
+            ))}
+          </View>
+          <ThemedText style={[styles.label, { color: muted }]}>
+            How important is political alignment?
+          </ThemedText>
+          <View style={styles.optionRow}>
+            {ALIGNMENT_IMPORTANCE_OPTIONS.map((option) => (
+              <OptionPill
+                key={option.value}
+                label={option.label}
+                selected={politicsImportance === option.value}
+                onPress={() => setPoliticsImportance(option.value)}
                 borderColor={borderColor}
                 activeBg={cardBg}
               />

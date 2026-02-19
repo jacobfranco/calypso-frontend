@@ -30,6 +30,12 @@ const IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
   { label: 'Dealbreaker', value: 'DEALBREAKER' },
 ];
 
+const ALIGNMENT_IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
+  { label: 'Not important', value: 'NOT_IMPORTANT' },
+  { label: 'Nice to have', value: 'PREFERENCE' },
+  { label: 'Important', value: 'DEALBREAKER' },
+];
+
 const RELATIONSHIP_MODES = ['casual', 'serious'];
 const AGE_MIN = 18;
 const AGE_MAX = 99;
@@ -174,11 +180,9 @@ export default function FiltersCategoryScreen() {
   const [locationName, setLocationName] = useState('');
 
   const [religionSelf, setReligionSelf] = useState('');
-  const [religionSeeking, setReligionSeeking] = useState<string[]>([]);
   const [religionImportance, setReligionImportance] = useState<Importance>('NOT_IMPORTANT');
 
   const [politicsSelf, setPoliticsSelf] = useState('');
-  const [politicsSeeking, setPoliticsSeeking] = useState<string[]>([]);
   const [politicsImportance, setPoliticsImportance] = useState<Importance>('NOT_IMPORTANT');
 
   const [lifestyleSelf, setLifestyleSelf] = useState<string[]>([]);
@@ -283,11 +287,9 @@ export default function FiltersCategoryScreen() {
     setRadiusKm(filters.location?.radiusKm !== undefined ? String(filters.location.radiusKm) : '');
 
     setReligionSelf(filters.religion?.self ?? '');
-    setReligionSeeking(filters.religion?.seeking ?? []);
     setReligionImportance(filters.religion?.importance ?? 'NOT_IMPORTANT');
 
     setPoliticsSelf(filters.politics?.self ?? '');
-    setPoliticsSeeking(filters.politics?.seeking ?? []);
     setPoliticsImportance(filters.politics?.importance ?? 'NOT_IMPORTANT');
 
     setLifestyleSelf(filters.lifestyle?.self ?? []);
@@ -416,18 +418,16 @@ export default function FiltersCategoryScreen() {
       },
     };
 
-    if (religionSelf || religionSeeking.length) {
+    if (religionSelf) {
       payload.religion = {
         self: religionSelf || undefined,
-        seeking: religionSeeking.length ? religionSeeking : undefined,
         importance: religionImportance,
       };
     }
 
-    if (politicsSelf || politicsSeeking.length) {
+    if (politicsSelf) {
       payload.politics = {
         self: politicsSelf || undefined,
-        seeking: politicsSeeking.length ? politicsSeeking : undefined,
         importance: politicsImportance,
       };
     }
@@ -499,24 +499,12 @@ export default function FiltersCategoryScreen() {
     }
 
     if (category === 'religion') {
-      if (activeRole === 'self') {
-        setReligionSelf(religionSelf === tag ? '' : tag);
-        setReligionSeeking(religionSeeking.filter((t) => t !== tag));
-      } else {
-        setReligionSelf(religionSelf === tag ? '' : religionSelf);
-        setReligionSeeking(toggleItem(religionSeeking, tag));
-      }
+      setReligionSelf(religionSelf === tag ? '' : tag);
       return;
     }
 
     if (category === 'politics') {
-      if (activeRole === 'self') {
-        setPoliticsSelf(politicsSelf === tag ? '' : tag);
-        setPoliticsSeeking(politicsSeeking.filter((t) => t !== tag));
-      } else {
-        setPoliticsSelf(politicsSelf === tag ? '' : politicsSelf);
-        setPoliticsSeeking(toggleItem(politicsSeeking, tag));
-      }
+      setPoliticsSelf(politicsSelf === tag ? '' : tag);
       return;
     }
 
@@ -705,47 +693,49 @@ export default function FiltersCategoryScreen() {
         )}
 
         {category === 'religion' && (
-          <TagSections
-            selfLabel="Self"
-            seekingLabel="Seeking"
-            allLabel="All tags"
-            selfTags={religionSelf ? [religionSelf] : []}
-            seekingTags={religionSeeking}
-            allTags={religionList}
-            importance={religionImportance}
-            importanceByTag={{}}
-            activeRole={activeRole}
-            onRoleChange={setActiveRole}
-            onSelectTag={handleSelectTag}
-            showImportance
-            onImportanceChange={setReligionImportance}
-            roleActiveBg={roleActiveBg}
-            borderColor={borderColor}
-            palette={importancePalette}
-            muted={muted}
-          />
+          <Section title="Religion">
+            <ThemedText style={[styles.label, { color: muted }]}>Your religion</ThemedText>
+            <ChipRow
+              options={religionList}
+              selected={religionSelf ? [religionSelf] : []}
+              onToggle={(tag) => setReligionSelf(religionSelf === tag ? '' : tag)}
+              palette={importancePalette}
+              borderColor={borderColor}
+            />
+            <ThemedText style={[styles.label, { color: muted }]}>
+              How important is religious alignment?
+            </ThemedText>
+            <ImportanceRow
+              value={religionImportance}
+              onChange={setReligionImportance}
+              palette={importancePalette}
+              borderColor={borderColor}
+              options={ALIGNMENT_IMPORTANCE_OPTIONS}
+            />
+          </Section>
         )}
 
         {category === 'politics' && (
-          <TagSections
-            selfLabel="Self"
-            seekingLabel="Seeking"
-            allLabel="All tags"
-            selfTags={politicsSelf ? [politicsSelf] : []}
-            seekingTags={politicsSeeking}
-            allTags={politicsList}
-            importance={politicsImportance}
-            importanceByTag={{}}
-            activeRole={activeRole}
-            onRoleChange={setActiveRole}
-            onSelectTag={handleSelectTag}
-            showImportance
-            onImportanceChange={setPoliticsImportance}
-            roleActiveBg={roleActiveBg}
-            borderColor={borderColor}
-            palette={importancePalette}
-            muted={muted}
-          />
+          <Section title="Politics">
+            <ThemedText style={[styles.label, { color: muted }]}>Your politics</ThemedText>
+            <ChipRow
+              options={politicsList}
+              selected={politicsSelf ? [politicsSelf] : []}
+              onToggle={(tag) => setPoliticsSelf(politicsSelf === tag ? '' : tag)}
+              palette={importancePalette}
+              borderColor={borderColor}
+            />
+            <ThemedText style={[styles.label, { color: muted }]}>
+              How important is political alignment?
+            </ThemedText>
+            <ImportanceRow
+              value={politicsImportance}
+              onChange={setPoliticsImportance}
+              palette={importancePalette}
+              borderColor={borderColor}
+              options={ALIGNMENT_IMPORTANCE_OPTIONS}
+            />
+          </Section>
         )}
 
         {category === 'lifestyle' && (
@@ -825,6 +815,8 @@ function TagSections({
   onSelectTag,
   showImportance = false,
   onImportanceChange,
+  importanceLabel,
+  importanceOptions,
   roleActiveBg,
   borderColor,
   palette,
@@ -843,6 +835,8 @@ function TagSections({
   onSelectTag: (tag: string) => void;
   showImportance?: boolean;
   onImportanceChange?: (value: Importance) => void;
+  importanceLabel?: string;
+  importanceOptions?: { label: string; value: Importance }[];
   roleActiveBg: string;
   borderColor: string;
   palette: ImportancePalette;
@@ -887,12 +881,18 @@ function TagSections({
         </Pressable>
       </View>
       {showImportance && activeRole === 'seeking' && onImportanceChange ? (
-        <ImportanceRow
-          value={importance}
-          onChange={onImportanceChange}
-          palette={palette}
-          borderColor={borderColor}
-        />
+        <View style={styles.section}>
+          {importanceLabel ? (
+            <ThemedText style={[styles.label, { color: muted }]}>{importanceLabel}</ThemedText>
+          ) : null}
+          <ImportanceRow
+            value={importance}
+            onChange={onImportanceChange}
+            palette={palette}
+            borderColor={borderColor}
+            options={importanceOptions}
+          />
+        </View>
       ) : null}
       <ThemedText style={[styles.label, { color: muted }]}>{allLabel}</ThemedText>
       <ChipRow
@@ -1078,15 +1078,17 @@ function ImportanceRow({
   onChange,
   palette,
   borderColor,
+  options = IMPORTANCE_OPTIONS,
 }: {
   value: Importance;
   onChange: (value: Importance) => void;
   palette: ImportancePalette;
   borderColor: string;
+  options?: { label: string; value: Importance }[];
 }) {
   return (
     <View style={styles.importanceRow}>
-      {IMPORTANCE_OPTIONS.map((option) => {
+      {options.map((option) => {
         const active = option.value === value;
         const importanceStyle = palette[option.value];
         return (

@@ -8,6 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import { useFiltersDraft } from '@/lib/filters-draft';
+import { Importance } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
 const RELATIONSHIP_CATEGORY = { key: 'relationship', label: 'Relationship mode' };
@@ -29,6 +30,12 @@ const FILTER_CATEGORIES = [
 ] as const;
 
 type FilterCategoryKey = (typeof FILTER_CATEGORIES)[number]['key'];
+
+const ALIGNMENT_IMPORTANCE_LABELS: Record<Importance, string> = {
+  NOT_IMPORTANT: 'Not important',
+  PREFERENCE: 'Nice to have',
+  DEALBREAKER: 'Important',
+};
 
 type FilterCategoryRowProps = {
   href: Href;
@@ -215,15 +222,15 @@ export default function FiltersIndexScreen() {
             ? `Lat ${filters.location.lat} · Lon ${filters.location.lon} · ${filters.location.radiusKm}km`
             : 'Not set');
     const religionSelf = filters.religion?.self ? `Self: ${filters.religion.self}` : '';
-    const religionSeeking = (filters.religion?.seeking ?? []).length
-      ? `Seeking: ${(filters.religion?.seeking ?? []).join(', ')}`
+    const religionImportance = filters.religion?.importance
+      ? `Importance: ${ALIGNMENT_IMPORTANCE_LABELS[filters.religion.importance]}`
       : '';
-    const religion = [religionSelf, religionSeeking].filter(Boolean).join(' · ') || 'Not set';
+    const religion = [religionSelf, religionImportance].filter(Boolean).join(' · ') || 'Not set';
     const politicsSelf = filters.politics?.self ? `Self: ${filters.politics.self}` : '';
-    const politicsSeeking = (filters.politics?.seeking ?? []).length
-      ? `Seeking: ${(filters.politics?.seeking ?? []).join(', ')}`
+    const politicsImportance = filters.politics?.importance
+      ? `Importance: ${ALIGNMENT_IMPORTANCE_LABELS[filters.politics.importance]}`
       : '';
-    const politics = [politicsSelf, politicsSeeking].filter(Boolean).join(' · ') || 'Not set';
+    const politics = [politicsSelf, politicsImportance].filter(Boolean).join(' · ') || 'Not set';
     const lifestyle = filters.lifestyle?.self?.length || filters.lifestyle?.preferences?.length
       ? [
           filters.lifestyle?.self?.length ? `Self: ${filters.lifestyle?.self?.join(', ')}` : '',
