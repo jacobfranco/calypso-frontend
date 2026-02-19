@@ -16,6 +16,7 @@ import * as Location from 'expo-location';
 import * as Notifications from 'expo-notifications';
 import MultiSlider from '@ptomasroos/react-native-multi-slider';
 
+import { AgeRangeSlider } from '@/components/age-range-slider';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
@@ -528,26 +529,21 @@ export default function OnboardingScreen() {
               onChange={handleDateChange}
             />
           </View>
-          <View style={styles.sliderBlock}>
-            <View style={styles.sliderHeader}>
-              <ThemedText style={[styles.label, { color: muted }]}>Age range</ThemedText>
-              <ThemedText style={[styles.label, { color: muted }]}>
-                {ageRange[0]} - {ageRange[1]}
-              </ThemedText>
-            </View>
-            <MultiSlider
-              values={ageRange}
-              min={MIN_AGE}
-              max={MAX_AGE}
-              step={1}
-              onValuesChange={(values) => setAgeRange([values[0], values[1]])}
-              selectedStyle={{ backgroundColor: inputText }}
-              unselectedStyle={{ backgroundColor: borderColor }}
-              markerStyle={{ backgroundColor: inputText, borderColor }}
-              trackStyle={styles.sliderTrack}
-              containerStyle={styles.sliderContainer}
-            />
-          </View>
+          <AgeRangeSlider
+            values={ageRange}
+            minAge={MIN_AGE}
+            maxAge={MAX_AGE}
+            onValuesChange={setAgeRange}
+            labelColor={muted}
+            selectedColor={inputText}
+            unselectedColor={borderColor}
+            markerBorderColor={borderColor}
+            blockStyle={styles.sliderBlock}
+            headerStyle={styles.sliderHeader}
+            labelStyle={styles.label}
+            trackStyle={styles.sliderTrack}
+            containerStyle={styles.sliderContainer}
+          />
           {age !== null && age < MIN_AGE ? (
             <ThemedText style={[styles.errorText, { color: muted }]}>
               You need to be at least 18 to sign up.

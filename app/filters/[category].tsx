@@ -10,8 +10,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
-import MultiSlider from '@ptomasroos/react-native-multi-slider';
-
+import { AgeRangeSlider } from '@/components/age-range-slider';
 import { ThemedText } from '@/components/themed-text';
 import {
   Filters,
@@ -626,26 +625,21 @@ export default function FiltersCategoryScreen() {
                 </ThemedText>
               </View>
             </View>
-            <View style={styles.sliderBlock}>
-              <View style={styles.sliderHeader}>
-                <ThemedText style={[styles.label, { color: muted }]}>Age range</ThemedText>
-                <ThemedText style={[styles.label, { color: muted }]}>
-                  {ageRange[0]} - {ageRange[1]}
-                </ThemedText>
-              </View>
-              <MultiSlider
-                values={ageRange}
-                min={AGE_MIN}
-                max={AGE_MAX}
-                step={1}
-                onValuesChange={(values) => setAgeRange([values[0], values[1]])}
-                selectedStyle={{ backgroundColor: inputText }}
-                unselectedStyle={{ backgroundColor: borderColor }}
-                markerStyle={{ backgroundColor: inputText, borderColor }}
-                trackStyle={styles.sliderTrack}
-                containerStyle={styles.sliderContainer}
-              />
-            </View>
+            <AgeRangeSlider
+              values={ageRange}
+              minAge={AGE_MIN}
+              maxAge={AGE_MAX}
+              onValuesChange={setAgeRange}
+              labelColor={muted}
+              selectedColor={inputText}
+              unselectedColor={borderColor}
+              markerBorderColor={borderColor}
+              blockStyle={styles.sliderBlock}
+              headerStyle={styles.sliderHeader}
+              labelStyle={styles.label}
+              trackStyle={styles.sliderTrack}
+              containerStyle={styles.sliderContainer}
+            />
             <ImportanceRow
               value={ageImportance}
               onChange={setAgeImportance}
