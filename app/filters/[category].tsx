@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,7 +14,6 @@ import { ThemedText } from '@/components/themed-text';
 import {
   Filters,
   Importance,
-  TagPreference,
   TagsResponse,
   fetchTags,
 } from '@/lib/api';
@@ -63,6 +61,47 @@ const CATEGORY_LABELS: Record<string, string> = {
 function flattenTags(groups: TagsResponse | null): string[] {
   if (!groups) return [];
   return Object.values(groups).flat();
+}
+
+const IMPORTANCE_RANK: Record<Importance, number> = {
+  NOT_IMPORTANT: 0,
+  PREFERENCE: 1,
+  DEALBREAKER: 2,
+};
+
+function maxImportance(left: Importance, right: Importance): Importance {
+  return IMPORTANCE_RANK[left] >= IMPORTANCE_RANK[right] ? left : right;
+}
+
+function capitalize(value: string) {
+  return value.length ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
+}
+
+function formatGroupLabel(value: string) {
+  if (!value) return value;
+  return value
+    .split('_')
+    .map((chunk) => capitalize(chunk))
+    .join(' ');
+}
+
+function buildLifestyleGroupImportance(
+  groups: TagsResponse | null,
+  prefs: Record<string, Importance>
+): Record<string, Importance> {
+  if (!groups) return {};
+  const result: Record<string, Importance> = {};
+  for (const [group, tags] of Object.entries(groups)) {
+    let groupImportance: Importance = 'NOT_IMPORTANT';
+    for (const tag of tags) {
+      const tagImportance = prefs[tag];
+      if (tagImportance) {
+        groupImportance = maxImportance(groupImportance, tagImportance);
+      }
+    }
+    result[group] = groupImportance;
+  }
+  return result;
 }
 
 
@@ -188,20 +227,19 @@ export default function FiltersCategoryScreen() {
 
   const [lifestyleSelf, setLifestyleSelf] = useState<string[]>([]);
   const [lifestylePrefs, setLifestylePrefs] = useState<Record<string, Importance>>({});
+  const [lifestyleGroupImportance, setLifestyleGroupImportance] = useState<Record<string, Importance>>({});
+  const lifestyleGroupHydrated = useRef(false);
 
   const [genderTags, setGenderTags] = useState<TagsResponse | null>(null);
   const [religionTags, setReligionTags] = useState<TagsResponse | null>(null);
   const [politicsTags, setPoliticsTags] = useState<TagsResponse | null>(null);
   const [lifestyleTags, setLifestyleTags] = useState<TagsResponse | null>(null);
 
-  const [activeTag, setActiveTag] = useState<string | null>(null);
   const [activeRole, setActiveRole] = useState<TagRole>('self');
-  const [activeImportance, setActiveImportance] = useState<Importance>('NOT_IMPORTANT');
 
   const genderList = useMemo(() => flattenTags(genderTags), [genderTags]);
   const religionList = useMemo(() => flattenTags(religionTags), [religionTags]);
   const politicsList = useMemo(() => flattenTags(politicsTags), [politicsTags]);
-  const lifestyleList = useMemo(() => flattenTags(lifestyleTags), [lifestyleTags]);
 
   useEffect(() => {
     let mounted = true;
@@ -248,6 +286,17 @@ export default function FiltersCategoryScreen() {
   useEffect(() => {
     setMessage(null);
   }, [category]);
+
+  useEffect(() => {
+    if (category !== 'lifestyle') {
+      lifestyleGroupHydrated.current = false;
+      return;
+    }
+    if (!lifestyleTags) return;
+    if (lifestyleGroupHydrated.current) return;
+    setLifestyleGroupImportance(buildLifestyleGroupImportance(lifestyleTags, lifestylePrefs));
+    lifestyleGroupHydrated.current = true;
+  }, [category, lifestyleTags, lifestylePrefs]);
 
   useEffect(() => {
     let mounted = true;
@@ -317,12 +366,16 @@ export default function FiltersCategoryScreen() {
     setPoliticsSelf(filters.politics?.self ?? '');
     setPoliticsImportance(filters.politics?.importance ?? 'NOT_IMPORTANT');
 
-    setLifestyleSelf(filters.lifestyle?.self ?? []);
+    const lifestyleSelfTags = filters.lifestyle?.self ?? [];
+    setLifestyleSelf(lifestyleSelfTags);
     const lifestyleMap: Record<string, Importance> = {};
     (filters.lifestyle?.preferences ?? []).forEach((pref) => {
-      lifestyleMap[pref.tag] = pref.importance;
+      if (lifestyleSelfTags.includes(pref.tag)) {
+        lifestyleMap[pref.tag] = pref.importance;
+      }
     });
     setLifestylePrefs(lifestyleMap);
+    lifestyleGroupHydrated.current = false;
   };
 
   const formatCoordinate = (value: number) => value.toFixed(3);
@@ -418,10 +471,6 @@ export default function FiltersCategoryScreen() {
     handleUseLocation();
   }, [category, handleUseLocation]);
 
-  const buildPreferences = (prefs: Record<string, Importance>): TagPreference[] => {
-    return Object.entries(prefs).map(([tag, importance]) => ({ tag, importance }));
-  };
-
   const handleSave = async () => {
     if (!account || !category) return;
     setMessage(null);
@@ -495,11 +544,13 @@ export default function FiltersCategoryScreen() {
     }
 
     if (lifestyleSelf.length || Object.keys(lifestylePrefs).length) {
+      const lifestyleSelfSet = new Set(lifestyleSelf);
+      const lifestylePreferences = Object.entries(lifestylePrefs)
+        .filter(([tag]) => lifestyleSelfSet.has(tag))
+        .map(([tag, importance]) => ({ tag, importance }));
       payload.lifestyle = {
         self: lifestyleSelf.length ? lifestyleSelf : undefined,
-        preferences: Object.keys(lifestylePrefs).length
-          ? buildPreferences(lifestylePrefs)
-          : undefined,
+        preferences: lifestylePreferences.length ? lifestylePreferences : undefined,
       };
     }
 
@@ -507,43 +558,48 @@ export default function FiltersCategoryScreen() {
     router.back();
   };
 
-  const openSeekingConfig = (tag: string) => {
-    if (!category) return;
-    setActiveRole('seeking');
-    setActiveTag(tag);
-
-    if (category === 'lifestyle') {
-      const importance = lifestylePrefs[tag] ?? 'NOT_IMPORTANT';
-      setActiveImportance(importance);
-      return;
-    }
-  };
-
-  const applyTagConfig = () => {
-    if (!activeTag || !category) return;
-
-    if (category === 'lifestyle') {
-      if (activeRole === 'seeking') {
-        setLifestyleSelf(lifestyleSelf.filter((t) => t !== activeTag));
-        setLifestylePrefs((prev) => ({
-          ...prev,
-          [activeTag]: activeImportance,
-        }));
+  const setLifestyleGroupImportanceValue = (group: string, importance: Importance) => {
+    setLifestyleGroupImportance((prev) => ({ ...prev, [group]: importance }));
+    if (!lifestyleTags) return;
+    const groupTags = lifestyleTags[group] ?? [];
+    if (!groupTags.length) return;
+    setLifestylePrefs((prev) => {
+      const next = { ...prev };
+      for (const tag of groupTags) {
+        if (!lifestyleSelf.includes(tag)) {
+          delete next[tag];
+          continue;
+        }
+        if (importance === 'NOT_IMPORTANT') {
+          delete next[tag];
+          continue;
+        }
+        next[tag] = importance;
       }
-    }
-
-    setActiveTag(null);
+      return next;
+    });
   };
 
-  const removePreference = (tag: string) => {
-    if (category === 'lifestyle') {
-      setLifestylePrefs((prev) => {
-        const next = { ...prev };
-        delete next[tag];
-        return next;
-      });
-      return;
-    }
+  const toggleLifestyleSelfTag = (group: string, groupTags: string[], tag: string) => {
+    const groupImportance = lifestyleGroupImportance[group] ?? 'NOT_IMPORTANT';
+    const groupTagSet = new Set(groupTags);
+    const isSelected = lifestyleSelf.includes(tag);
+    const nextSelf = isSelected
+      ? lifestyleSelf.filter((t) => !groupTagSet.has(t))
+      : [...lifestyleSelf.filter((t) => !groupTagSet.has(t)), tag];
+
+    setLifestyleSelf(nextSelf);
+    setLifestylePrefs((prev) => {
+      const next = { ...prev };
+      for (const t of groupTags) {
+        if (nextSelf.includes(t) && groupImportance !== 'NOT_IMPORTANT') {
+          next[t] = groupImportance;
+        } else {
+          delete next[t];
+        }
+      }
+      return next;
+    });
   };
 
   const handleSelectTag = (tag: string) => {
@@ -567,28 +623,6 @@ export default function FiltersCategoryScreen() {
 
     if (category === 'politics') {
       setPoliticsSelf(politicsSelf === tag ? '' : tag);
-      return;
-    }
-
-    if (category === 'lifestyle') {
-      if (activeRole === 'self') {
-        setLifestyleSelf(toggleItem(lifestyleSelf, tag));
-        setLifestylePrefs((prev) => {
-          const next = { ...prev };
-          delete next[tag];
-          return next;
-        });
-      } else {
-        if (lifestylePrefs[tag]) {
-          openSeekingConfig(tag);
-        } else {
-          setLifestyleSelf(lifestyleSelf.filter((t) => t !== tag));
-          setLifestylePrefs((prev) => ({
-            ...prev,
-            [tag]: activeImportance,
-          }));
-        }
-      }
       return;
     }
   };
@@ -857,23 +891,35 @@ export default function FiltersCategoryScreen() {
         )}
 
         {category === 'lifestyle' && (
-          <TagSections
-            selfLabel="Self"
-            seekingLabel="Seeking"
-            allLabel="All tags"
-            selfTags={lifestyleSelf}
-            seekingTags={Object.keys(lifestylePrefs)}
-            allTags={lifestyleList}
-            importance={activeImportance}
-            importanceByTag={lifestylePrefs}
-            activeRole={activeRole}
-            onRoleChange={setActiveRole}
-            onSelectTag={handleSelectTag}
-            roleActiveBg={roleActiveBg}
-            borderColor={borderColor}
-            palette={importancePalette}
-            muted={muted}
-          />
+          <View style={styles.section}>
+            {(lifestyleTags ? Object.entries(lifestyleTags) : []).map(([group, tags]) => {
+              const groupImportance = lifestyleGroupImportance[group] ?? 'NOT_IMPORTANT';
+              const groupSelfTags = lifestyleSelf.filter((tag) => tags.includes(tag));
+
+              return (
+                <View key={group} style={styles.groupSection}>
+                  <ThemedText type="defaultSemiBold">{formatGroupLabel(group)}</ThemedText>
+                  <ThemedText style={[styles.label, { color: muted }]}>Your lifestyle</ThemedText>
+                  <ChipRow
+                    options={tags}
+                    selected={groupSelfTags}
+                    onToggle={(tag) => toggleLifestyleSelfTag(group, tags, tag)}
+                    palette={importancePalette}
+                    borderColor={borderColor}
+                  />
+                  <ThemedText style={[styles.label, { color: muted }]}>
+                    How important is it that your partner matches your selections?
+                  </ThemedText>
+                  <ImportanceRow
+                    value={groupImportance}
+                    onChange={(value) => setLifestyleGroupImportanceValue(group, value)}
+                    palette={importancePalette}
+                    borderColor={borderColor}
+                  />
+                </View>
+              );
+            })}
+          </View>
         )}
 
         <Pressable style={[styles.saveButton, { backgroundColor: primaryBg }]} onPress={handleSave}>
@@ -884,28 +930,6 @@ export default function FiltersCategoryScreen() {
         </ScrollView>
       </View>
 
-      <TagConfigModal
-        visible={activeTag !== null && activeRole === 'seeking'}
-        tag={activeTag ?? ''}
-        importance={activeImportance}
-        onImportanceChange={setActiveImportance}
-        onRemove={() => {
-          if (!activeTag || !category) return;
-          if (category === 'lifestyle') {
-            removePreference(activeTag);
-          }
-          setActiveTag(null);
-        }}
-        onClose={() => setActiveTag(null)}
-        onApply={applyTagConfig}
-        borderColor={borderColor}
-        primaryBg={primaryBg}
-        primaryText={primaryText}
-        muted={muted}
-        overlayColor={overlayColor}
-        modalBg={modalBg}
-        palette={importancePalette}
-      />
     </View>
   );
 }
@@ -1052,70 +1076,6 @@ function TagSections({
         importanceByTag={importanceByTag}
       />
     </View>
-  );
-}
-
-function TagConfigModal({
-  visible,
-  tag,
-  importance,
-  onImportanceChange,
-  onRemove,
-  onClose,
-  onApply,
-  borderColor,
-  primaryBg,
-  primaryText,
-  muted,
-  overlayColor,
-  modalBg,
-  palette,
-}: {
-  visible: boolean;
-  tag: string;
-  importance: Importance;
-  onImportanceChange: (value: Importance) => void;
-  onRemove: () => void;
-  onClose: () => void;
-  onApply: () => void;
-  borderColor: string;
-  primaryBg: string;
-  primaryText: string;
-  muted: string;
-  overlayColor: string;
-  modalBg: string;
-  palette: ImportancePalette;
-}) {
-  return (
-    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
-      <View style={[styles.overlay, { backgroundColor: overlayColor }]}>
-        <View style={[styles.configCard, { backgroundColor: modalBg, borderColor }]}>
-          <ThemedText type="defaultSemiBold">{tag}</ThemedText>
-          <View style={styles.section}>
-            <ThemedText style={[styles.label, { color: muted }]}>Importance</ThemedText>
-            <ImportanceRow
-              value={importance}
-              onChange={onImportanceChange}
-              palette={palette}
-              borderColor={borderColor}
-            />
-          </View>
-          <View style={styles.configActions}>
-            <Pressable onPress={onRemove}>
-              <ThemedText style={[styles.linkText, { color: muted }]}>Clear</ThemedText>
-            </Pressable>
-            <View style={styles.configRight}>
-              <Pressable onPress={onClose}>
-                <ThemedText style={[styles.linkText, { color: muted }]}>Cancel</ThemedText>
-              </Pressable>
-              <Pressable style={[styles.primaryButtonSmall, { backgroundColor: primaryBg }]} onPress={onApply}>
-                <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}>Apply</ThemedText>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </View>
-    </Modal>
   );
 }
 
@@ -1370,6 +1330,9 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 999,
   },
+  groupSection: {
+    gap: 12,
+  },
   saveButton: {
     paddingVertical: 14,
     borderRadius: 12,
@@ -1383,34 +1346,5 @@ const styles = StyleSheet.create({
   },
   linkText: {
     opacity: 0.7,
-  },
-  overlay: {
-    flex: 1,
-    justifyContent: 'center',
-    padding: 20,
-  },
-  configCard: {
-    borderRadius: 16,
-    padding: 16,
-    gap: 16,
-    borderWidth: 1,
-  },
-  configActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  configRight: {
-    flexDirection: 'row',
-    gap: 12,
-    alignItems: 'center',
-  },
-  primaryButtonSmall: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-  },
-  primaryButtonText: {
-    fontWeight: '600',
   },
 });

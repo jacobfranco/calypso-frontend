@@ -265,7 +265,7 @@ export default function FiltersIndexScreen() {
       ? [
           filters.lifestyle?.self?.length ? `Self: ${filters.lifestyle?.self?.join(', ')}` : '',
           filters.lifestyle?.preferences?.length
-            ? `Seeking: ${filters.lifestyle?.preferences?.map((pref) => pref.tag).join(', ')}`
+            ? `Preferences: ${filters.lifestyle?.preferences?.map((pref) => pref.tag).join(', ')}`
             : '',
         ]
           .filter(Boolean)

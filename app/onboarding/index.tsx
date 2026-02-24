@@ -23,6 +23,8 @@ import { useAuth } from '@/lib/auth';
 import {
   Filters,
   Importance,
+  TagPreference,
+  TagsResponse,
   fetchTags,
   postFilters,
   requestPhoneCode,
@@ -93,6 +95,7 @@ export default function OnboardingScreen() {
   const [politicsImportance, setPoliticsImportance] = useState<Importance>('NOT_IMPORTANT');
   const [relationshipMode, setRelationshipMode] = useState('');
   const [lifestyleSelections, setLifestyleSelections] = useState<string[]>([]);
+  const [lifestyleImportanceByGroup, setLifestyleImportanceByGroup] = useState<Record<string, Importance>>({});
   const [locationScope, setLocationScope] = useState<'nearby' | 'country' | 'worldwide'>('nearby');
   const [radiusUnit, setRadiusUnit] = useState<'mi' | 'km'>('mi');
   const [radiusValue, setRadiusValue] = useState(25);
@@ -107,7 +110,7 @@ export default function OnboardingScreen() {
   const [genderOptions, setGenderOptions] = useState<string[]>([]);
   const [religionOptions, setReligionOptions] = useState<string[]>([]);
   const [politicsOptions, setPoliticsOptions] = useState<string[]>([]);
-  const [lifestyleOptions, setLifestyleOptions] = useState<string[]>([]);
+  const [lifestyleTagGroups, setLifestyleTagGroups] = useState<TagsResponse | null>(null);
 
   const handleNameChange = (text: string) => {
     setName(text);
@@ -167,13 +170,13 @@ export default function OnboardingScreen() {
         setGenderOptions(Object.values(genderTags).flat());
         setReligionOptions(Object.values(religionTags).flat());
         setPoliticsOptions(Object.values(politicsTags).flat());
-        setLifestyleOptions(Object.values(lifestyleTagGroups).flat());
+        setLifestyleTagGroups(lifestyleTagGroups);
       } catch {
         if (!mounted) return;
         setGenderOptions([]);
         setReligionOptions([]);
         setPoliticsOptions([]);
-        setLifestyleOptions([]);
+        setLifestyleTagGroups(null);
       }
     };
     loadTags();
@@ -255,6 +258,22 @@ export default function OnboardingScreen() {
     relationshipMode,
     step,
   ]);
+
+  const buildLifestylePreferences = (): TagPreference[] => {
+    if (!lifestyleTagGroups) return [];
+    const selected = new Set(lifestyleSelections);
+    const prefs: TagPreference[] = [];
+    for (const [group, tags] of Object.entries(lifestyleTagGroups)) {
+      const importance = lifestyleImportanceByGroup[group] ?? 'NOT_IMPORTANT';
+      if (importance === 'NOT_IMPORTANT') continue;
+      for (const tag of tags) {
+        if (selected.has(tag)) {
+          prefs.push({ tag, importance });
+        }
+      }
+    }
+    return prefs;
+  };
 
   const handleBack = () => {
     setMessage(null);
@@ -385,8 +404,12 @@ export default function OnboardingScreen() {
           countryCode: countryCode || undefined,
           distanceUnit,
         };
-        if (lifestyleSelections.length) {
-          filtersPayload.lifestyle = { self: lifestyleSelections };
+        const lifestylePreferences = buildLifestylePreferences();
+        if (lifestyleSelections.length || lifestylePreferences.length) {
+          filtersPayload.lifestyle = {
+            self: lifestyleSelections.length ? lifestyleSelections : undefined,
+            preferences: lifestylePreferences.length ? lifestylePreferences : undefined,
+          };
         }
 
         await postFilters(account.id, token, filtersPayload);
@@ -724,23 +747,60 @@ export default function OnboardingScreen() {
     }
 
     if (step === 'lifestyle') {
+      const lifestyleGroups = lifestyleTagGroups ? Object.entries(lifestyleTagGroups) : [];
       return (
         <View style={styles.section}>
           <ThemedText style={[styles.label, { color: muted }]}>
-            Select your boundaries (optional)
+            Select your lifestyle (optional)
           </ThemedText>
-          <View style={styles.optionRow}>
-            {lifestyleOptions.map((option) => (
-              <OptionPill
-                key={option}
-                label={option}
-                selected={lifestyleSelections.includes(option)}
-                onPress={() => setLifestyleSelections((prev) => toggleItem(prev, option))}
-                borderColor={borderColor}
-                activeBg={cardBg}
-              />
-            ))}
-          </View>
+          {lifestyleGroups.map(([group, options]) => {
+            const groupImportance = lifestyleImportanceByGroup[group] ?? 'NOT_IMPORTANT';
+            return (
+              <View key={group} style={styles.groupBlock}>
+                <ThemedText style={[styles.groupTitle, { color: muted }]}>
+                  {formatGroupLabel(group)}
+                </ThemedText>
+                <View style={styles.optionRow}>
+                  {options.map((option) => (
+                    <OptionPill
+                      key={option}
+                      label={option}
+                      selected={lifestyleSelections.includes(option)}
+                      onPress={() =>
+                        setLifestyleSelections((prev) => {
+                          const alreadySelected = prev.includes(option);
+                          const withoutGroup = prev.filter((tag) => !options.includes(tag));
+                          return alreadySelected ? withoutGroup : [...withoutGroup, option];
+                        })
+                      }
+                      borderColor={borderColor}
+                      activeBg={cardBg}
+                    />
+                  ))}
+                </View>
+                <ThemedText style={[styles.label, { color: muted }]}>
+                  How important is it that your partner matches these?
+                </ThemedText>
+                <View style={styles.optionRow}>
+                  {ALIGNMENT_IMPORTANCE_OPTIONS.map((option) => (
+                    <OptionPill
+                      key={option.value}
+                      label={option.label}
+                      selected={groupImportance === option.value}
+                      onPress={() =>
+                        setLifestyleImportanceByGroup((prev) => ({
+                          ...prev,
+                          [group]: option.value,
+                        }))
+                      }
+                      borderColor={borderColor}
+                      activeBg={cardBg}
+                    />
+                  ))}
+                </View>
+              </View>
+            );
+          })}
         </View>
       );
     }
@@ -958,6 +1018,14 @@ function capitalize(value: string) {
   return value.length ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
 }
 
+function formatGroupLabel(value: string) {
+  if (!value) return value;
+  return value
+    .split('_')
+    .map((chunk) => capitalize(chunk))
+    .join(' ');
+}
+
 function toggleItem(list: string[], value: string) {
   if (list.includes(value)) {
     return list.filter((item) => item !== value);
@@ -1016,6 +1084,13 @@ const styles = StyleSheet.create({
   },
   optionPillTextActive: {
     opacity: 1,
+  },
+  groupBlock: {
+    gap: 8,
+  },
+  groupTitle: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   card: {
     borderRadius: 16,
