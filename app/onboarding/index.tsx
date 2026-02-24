@@ -46,7 +46,7 @@ const STEPS = [
 
 type StepKey = (typeof STEPS)[number];
 
-const RELATIONSHIP_OPTIONS = ['casual', 'serious'];
+const RELATIONSHIP_OPTIONS = ['focused', 'balanced', 'exploratory'];
 const ALIGNMENT_IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
   { label: 'Not important', value: 'NOT_IMPORTANT' },
   { label: 'Nice to have', value: 'PREFERENCE' },
@@ -714,6 +714,11 @@ export default function OnboardingScreen() {
               />
             ))}
           </View>
+          <ThemedText style={[styles.mutedText, { color: muted }]}>
+            Focused: fewer matches, higher compatibility.{'\n'}
+            Balanced: moderate volume, moderate threshold.{'\n'}
+            Exploratory: wider net, lower threshold.
+          </ThemedText>
         </View>
       );
     }

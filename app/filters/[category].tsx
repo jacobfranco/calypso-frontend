@@ -36,7 +36,7 @@ const ALIGNMENT_IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
   { label: 'Important', value: 'DEALBREAKER' },
 ];
 
-const RELATIONSHIP_MODES = ['casual', 'serious'];
+const RELATIONSHIP_MODES = ['focused', 'balanced', 'exploratory'];
 const AGE_MIN = 18;
 const AGE_MAX = 99;
 const RADIUS_MIN = 1;
@@ -662,6 +662,11 @@ export default function FiltersCategoryScreen() {
               borderColor={borderColor}
               palette={importancePalette}
             />
+            <ThemedText style={[styles.helperText, { color: muted }]}>
+              Focused: fewer matches, higher compatibility.{"\n"}
+              Balanced: moderate volume, moderate threshold.{"\n"}
+              Exploratory: wider net, lower threshold.
+            </ThemedText>
           </Section>
         )}
 
