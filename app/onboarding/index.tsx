@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -98,6 +98,8 @@ export default function OnboardingScreen() {
   const [radiusValue, setRadiusValue] = useState(25);
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
+  const [countryCode, setCountryCode] = useState('');
+  const [countryName, setCountryName] = useState('');
   const [locationPermission, setLocationPermission] = useState<LocationPermission>('unknown');
   const [locationName, setLocationName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -230,14 +232,16 @@ export default function OnboardingScreen() {
     if (step === 'relationship') return relationshipMode.length > 0;
     if (step === 'lifestyle') return true;
     if (step === 'location') {
-      if (locationScope === 'worldwide') return true;
-      if (locationScope === 'country') return lat !== null && lon !== null;
-      return lat !== null && lon !== null && radiusValue >= RADIUS_MIN;
+      if (lat === null || lon === null) return false;
+      if (locationScope === 'country' && !countryCode) return false;
+      if (locationScope === 'nearby') return radiusValue >= RADIUS_MIN;
+      return true;
     }
     return false;
   }, [
     age,
     code,
+    countryCode,
     gender,
     locationScope,
     lat,
@@ -321,6 +325,14 @@ export default function OnboardingScreen() {
         setMessage('You need to be at least 18 to sign up.');
         return;
       }
+      if (lat === null || lon === null) {
+        setMessage('Location is required to use the app. Please enable location services.');
+        return;
+      }
+      if (locationScope === 'country' && !countryCode) {
+        setMessage('We could not determine your country. Please try again.');
+        return;
+      }
       if (!verificationToken) {
         setMessage('Please verify your phone number.');
         return;
@@ -343,6 +355,13 @@ export default function OnboardingScreen() {
             : locationScope === 'country'
               ? COUNTRY_RADIUS_KM
               : WORLDWIDE_RADIUS_KM;
+        const scope =
+          locationScope === 'nearby'
+            ? 'NEARBY'
+            : locationScope === 'country'
+              ? 'COUNTRY'
+              : 'WORLDWIDE';
+        const distanceUnit = locationScope === 'nearby' ? (radiusUnit === 'mi' ? 'MI' : 'KM') : undefined;
         const filtersPayload: Filters = {
           relationshipMode: { self: relationshipMode },
           gender: {
@@ -358,13 +377,14 @@ export default function OnboardingScreen() {
             importance: 'NOT_IMPORTANT',
           },
         };
-        if (locationScope !== 'worldwide') {
-          filtersPayload.location = {
-            lat: lat ?? undefined,
-            lon: lon ?? undefined,
-            radiusKm,
-          };
-        }
+        filtersPayload.location = {
+          lat,
+          lon,
+          radiusKm,
+          scope,
+          countryCode: countryCode || undefined,
+          distanceUnit,
+        };
         if (lifestyleSelections.length) {
           filtersPayload.lifestyle = { self: lifestyleSelections };
         }
@@ -394,7 +414,7 @@ export default function OnboardingScreen() {
     }
   };
 
-  const handleUseLocation = async () => {
+  const handleUseLocation = useCallback(async () => {
     setMessage(null);
     setLoading(true);
     try {
@@ -405,7 +425,7 @@ export default function OnboardingScreen() {
       }
       setLocationPermission(status);
       if (status !== 'granted') {
-        setMessage('Location permission not granted.');
+        setMessage('Location is required to use the app. Please enable location services.');
         return;
       }
       const position = await Location.getCurrentPositionAsync({
@@ -419,12 +439,22 @@ export default function OnboardingScreen() {
       });
       const top = results[0];
       setLocationName(top ? formatPlacemark(top) : '');
+      setCountryCode(top?.isoCountryCode ? top.isoCountryCode.toUpperCase() : '');
+      setCountryName(top?.country ?? '');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to get location');
+      setCountryCode('');
+      setCountryName('');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (step !== 'location') return;
+    if (lat !== null && lon !== null) return;
+    handleUseLocation();
+  }, [handleUseLocation, lat, lon, step]);
 
   const locationLabel = useMemo(() => {
     if (loading && step === 'location') return 'Locating…';
@@ -785,7 +815,7 @@ export default function OnboardingScreen() {
           )}
           {locationScope === 'country' && (
             <ThemedText style={[styles.helperText, { color: muted }]}>
-              We&apos;ll use a country-sized radius from your location.
+              Using {countryName || 'your country'}.
             </ThemedText>
           )}
           {locationScope === 'worldwide' && (

@@ -1,15 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
-  TextInput,
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Location from 'expo-location';
+import MultiSlider from '@ptomasroos/react-native-multi-slider';
 import { AgeRangeSlider } from '@/components/age-range-slider';
 import { ThemedText } from '@/components/themed-text';
 import {
@@ -39,6 +39,10 @@ const ALIGNMENT_IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
 const RELATIONSHIP_MODES = ['casual', 'serious'];
 const AGE_MIN = 18;
 const AGE_MAX = 99;
+const RADIUS_MIN = 1;
+const RADIUS_MAX = 100;
+const COUNTRY_RADIUS_KM = 3000;
+const WORLDWIDE_RADIUS_KM = 30000;
 
 type TagRole = 'self' | 'seeking';
 
@@ -80,10 +84,6 @@ export default function FiltersCategoryScreen() {
     { light: 'rgba(0, 0, 0, 0.12)', dark: 'rgba(255, 255, 255, 0.18)' },
     'icon'
   );
-  const softBorder = useThemeColor(
-    { light: 'rgba(0, 0, 0, 0.08)', dark: 'rgba(255, 255, 255, 0.12)' },
-    'icon'
-  );
   const cardBg = useThemeColor(
     { light: 'rgba(0, 0, 0, 0.02)', dark: 'rgba(255, 255, 255, 0.04)' },
     'background'
@@ -97,10 +97,6 @@ export default function FiltersCategoryScreen() {
     'background'
   );
   const inputText = useThemeColor({}, 'text');
-  const placeholderColor = useThemeColor(
-    { light: 'rgba(0, 0, 0, 0.4)', dark: 'rgba(255, 255, 255, 0.4)' },
-    'text'
-  );
   const muted = useThemeColor(
     { light: 'rgba(0, 0, 0, 0.6)', dark: 'rgba(255, 255, 255, 0.6)' },
     'text'
@@ -171,13 +167,18 @@ export default function FiltersCategoryScreen() {
   const [ageRange, setAgeRange] = useState<[number, number]>([AGE_MIN, AGE_MIN + 4]);
   const [ageImportance, setAgeImportance] = useState<Importance>('NOT_IMPORTANT');
 
-  const [lat, setLat] = useState('');
-  const [lon, setLon] = useState('');
-  const [radiusKm, setRadiusKm] = useState('');
+  const [locationScope, setLocationScope] = useState<'nearby' | 'country' | 'worldwide'>('nearby');
+  const [radiusUnit, setRadiusUnit] = useState<'mi' | 'km'>('mi');
+  const [radiusValue, setRadiusValue] = useState(25);
+  const [lat, setLat] = useState<number | null>(null);
+  const [lon, setLon] = useState<number | null>(null);
+  const [countryCode, setCountryCode] = useState('');
+  const [countryName, setCountryName] = useState('');
   const [locationPermission, setLocationPermission] = useState<LocationPermission>('unknown');
   const [locating, setLocating] = useState(false);
   const [geocoding, setGeocoding] = useState(false);
   const [locationName, setLocationName] = useState('');
+  const autoLocateRef = useRef(false);
 
   const [religionSelf, setReligionSelf] = useState('');
   const [religionImportance, setReligionImportance] = useState<Importance>('NOT_IMPORTANT');
@@ -282,9 +283,33 @@ export default function FiltersCategoryScreen() {
     }
     setAgeImportance(filters.age?.importance ?? 'NOT_IMPORTANT');
 
-    setLat(filters.location?.lat !== undefined ? String(filters.location.lat) : '');
-    setLon(filters.location?.lon !== undefined ? String(filters.location.lon) : '');
-    setRadiusKm(filters.location?.radiusKm !== undefined ? String(filters.location.radiusKm) : '');
+    const radiusKmValue = filters.location?.radiusKm;
+    const scope = filters.location?.scope;
+    setLat(filters.location?.lat ?? null);
+    setLon(filters.location?.lon ?? null);
+    setCountryCode(filters.location?.countryCode?.toUpperCase() ?? '');
+    if (scope === 'WORLDWIDE') {
+      setLocationScope('worldwide');
+    } else if (scope === 'COUNTRY') {
+      setLocationScope('country');
+    } else if (scope === 'NEARBY') {
+      setLocationScope('nearby');
+    } else if (radiusKmValue === WORLDWIDE_RADIUS_KM) {
+      setLocationScope('worldwide');
+    } else if (radiusKmValue === COUNTRY_RADIUS_KM) {
+      setLocationScope('country');
+    } else {
+      setLocationScope('nearby');
+      if (radiusKmValue !== undefined) {
+        const unit = filters.location?.distanceUnit === 'MI' ? 'mi' : 'km';
+        const value = unit === 'mi' ? radiusKmValue / 1.60934 : radiusKmValue;
+        setRadiusUnit(unit);
+        setRadiusValue(Math.round(value));
+      } else {
+        setRadiusValue(25);
+        setRadiusUnit('mi');
+      }
+    }
 
     setReligionSelf(filters.religion?.self ?? '');
     setReligionImportance(filters.religion?.importance ?? 'NOT_IMPORTANT');
@@ -300,11 +325,7 @@ export default function FiltersCategoryScreen() {
     setLifestylePrefs(lifestyleMap);
   };
 
-  const formatCoordinate = (value: string) => {
-    const parsed = Number(value);
-    if (Number.isNaN(parsed)) return value;
-    return parsed.toFixed(3);
-  };
+  const formatCoordinate = (value: number) => value.toFixed(3);
 
   const formatPlacemark = (placemark: Location.LocationGeocodedAddress) => {
     const city = placemark.city || placemark.subregion || '';
@@ -320,7 +341,7 @@ export default function FiltersCategoryScreen() {
     if (locating) return 'Locating…';
     if (geocoding) return 'Finding location…';
     if (locationName) return locationName;
-    if (lat && lon) {
+    if (lat !== null && lon !== null) {
       return `Lat ${formatCoordinate(lat)} · Lon ${formatCoordinate(lon)}`;
     }
     if (locationPermission === 'denied') {
@@ -333,25 +354,25 @@ export default function FiltersCategoryScreen() {
     let mounted = true;
 
     const runGeocode = async () => {
-      if (!lat || !lon) {
+      if (lat === null || lon === null) {
         setLocationName('');
+        setCountryCode('');
+        setCountryName('');
         return;
       }
       setGeocoding(true);
       try {
-        const latitude = Number(lat);
-        const longitude = Number(lon);
-        if (Number.isNaN(latitude) || Number.isNaN(longitude)) {
-          setLocationName('');
-          return;
-        }
-        const results = await Location.reverseGeocodeAsync({ latitude, longitude });
+        const results = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lon });
         if (!mounted) return;
         const top = results[0];
         setLocationName(top ? formatPlacemark(top) : '');
+        setCountryCode(top?.isoCountryCode ? top.isoCountryCode.toUpperCase() : '');
+        setCountryName(top?.country ?? '');
       } catch {
         if (!mounted) return;
         setLocationName('');
+        setCountryCode('');
+        setCountryName('');
       } finally {
         if (mounted) setGeocoding(false);
       }
@@ -363,7 +384,7 @@ export default function FiltersCategoryScreen() {
     };
   }, [lat, lon]);
 
-  const handleUseLocation = async () => {
+  const handleUseLocation = useCallback(async () => {
     if (locating) return;
     setMessage(null);
     setLocating(true);
@@ -375,20 +396,27 @@ export default function FiltersCategoryScreen() {
       }
       setLocationPermission(status);
       if (status !== 'granted') {
-        setMessage('Location permission not granted.');
+        setMessage('Location is required to use the app. Please enable location services.');
         return;
       }
       const position = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
-      setLat(String(position.coords.latitude));
-      setLon(String(position.coords.longitude));
+      setLat(position.coords.latitude);
+      setLon(position.coords.longitude);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to get location');
     } finally {
       setLocating(false);
     }
-  };
+  }, [locating]);
+
+  useEffect(() => {
+    if (category !== 'location') return;
+    if (autoLocateRef.current) return;
+    autoLocateRef.current = true;
+    handleUseLocation();
+  }, [category, handleUseLocation]);
 
   const buildPreferences = (prefs: Record<string, Importance>): TagPreference[] => {
     return Object.entries(prefs).map(([tag, importance]) => ({ tag, importance }));
@@ -397,6 +425,37 @@ export default function FiltersCategoryScreen() {
   const handleSave = async () => {
     if (!account || !category) return;
     setMessage(null);
+
+    if (category === 'location') {
+      if (lat === null || lon === null) {
+        setMessage('Location is required to use the app. Please enable location services.');
+        return;
+      }
+      if (locationScope === 'country' && !countryCode) {
+        setMessage('We could not determine your country. Please try again.');
+        return;
+      }
+      if (locationScope === 'nearby' && radiusValue < RADIUS_MIN) {
+        setMessage('Please choose a valid nearby radius.');
+        return;
+      }
+    }
+
+    const radiusKm =
+      locationScope === 'nearby'
+        ? radiusUnit === 'mi'
+          ? radiusValue * 1.60934
+          : radiusValue
+        : locationScope === 'country'
+          ? COUNTRY_RADIUS_KM
+          : WORLDWIDE_RADIUS_KM;
+    const scope =
+      locationScope === 'nearby'
+        ? 'NEARBY'
+        : locationScope === 'country'
+          ? 'COUNTRY'
+          : 'WORLDWIDE';
+    const distanceUnit = locationScope === 'nearby' ? (radiusUnit === 'mi' ? 'MI' : 'KM') : undefined;
 
     const payload: Filters = {
       relationshipMode: relationshipMode ? { self: relationshipMode } : undefined,
@@ -412,9 +471,12 @@ export default function FiltersCategoryScreen() {
         importance: ageImportance,
       },
       location: {
-        lat: lat === '' ? undefined : Number(lat),
-        lon: lon === '' ? undefined : Number(lon),
-        radiusKm: radiusKm === '' ? undefined : Number(radiusKm),
+        lat: lat ?? undefined,
+        lon: lon ?? undefined,
+        radiusKm,
+        scope,
+        countryCode: countryCode || undefined,
+        distanceUnit,
       },
     };
 
@@ -639,34 +701,85 @@ export default function FiltersCategoryScreen() {
 
         {category === 'location' && (
           <Section title="Location">
-            <View style={styles.inlineRow}>
-              <Pressable
-                onPress={handleUseLocation}
-                style={({ pressed }) => [
-                  styles.locationPill,
-                  { borderColor, backgroundColor: cardBg, opacity: locating ? 0.7 : 1 },
-                  pressed && !locating ? styles.locationPillPressed : null,
-                ]}
-              >
-                <ThemedText
-                  numberOfLines={1}
-                  ellipsizeMode="tail"
-                  style={[styles.locationPillText, { color: muted }]}
-                >
-                  {locating ? 'Locating…' : locationLabel}
-                </ThemedText>
-              </Pressable>
-              <Input
-                label="Radius km"
-                value={radiusKm}
-                onChange={setRadiusKm}
-                borderColor={borderColor}
-                inputBg={inputBg}
-                placeholderColor={placeholderColor}
-                textColor={inputText}
-                labelColor={muted}
-              />
+            <View style={styles.optionRow}>
+              {[
+                { value: 'nearby', label: 'Nearby' },
+                { value: 'country', label: 'My country' },
+                { value: 'worldwide', label: 'Worldwide' },
+              ].map((option) => (
+                <OptionPill
+                  key={option.value}
+                  label={option.label}
+                  selected={locationScope === option.value}
+                  onPress={() => setLocationScope(option.value as typeof locationScope)}
+                  borderColor={borderColor}
+                  activeBg={cardBg}
+                />
+              ))}
             </View>
+            <Pressable
+              onPress={handleUseLocation}
+              style={({ pressed }) => [
+                styles.locationPill,
+                { borderColor, backgroundColor: cardBg, opacity: locating ? 0.7 : 1 },
+                pressed && !locating ? styles.locationPillPressed : null,
+              ]}
+            >
+              <ThemedText
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                style={[styles.locationPillText, { color: muted }]}
+              >
+                {locating ? 'Locating…' : locationLabel}
+              </ThemedText>
+            </Pressable>
+            {locationScope === 'nearby' && (
+              <View style={styles.sliderBlock}>
+                <View style={styles.sliderHeader}>
+                  <ThemedText style={[styles.label, { color: muted }]}>Radius</ThemedText>
+                  <ThemedText style={[styles.label, { color: muted }]}>
+                    {radiusValue} {radiusUnit}
+                  </ThemedText>
+                </View>
+                <MultiSlider
+                  values={[radiusValue]}
+                  min={RADIUS_MIN}
+                  max={RADIUS_MAX}
+                  step={1}
+                  onValuesChange={(values) => setRadiusValue(values[0])}
+                  selectedStyle={{ backgroundColor: inputText }}
+                  unselectedStyle={{ backgroundColor: borderColor }}
+                  markerStyle={{ backgroundColor: inputText, borderColor }}
+                  trackStyle={styles.sliderTrack}
+                  containerStyle={styles.sliderContainer}
+                />
+                <View style={styles.optionRow}>
+                  {[
+                    { value: 'mi', label: 'Miles' },
+                    { value: 'km', label: 'Kilometers' },
+                  ].map((option) => (
+                    <OptionPill
+                      key={option.value}
+                      label={option.label}
+                      selected={radiusUnit === option.value}
+                      onPress={() => setRadiusUnit(option.value as typeof radiusUnit)}
+                      borderColor={borderColor}
+                      activeBg={cardBg}
+                    />
+                  ))}
+                </View>
+              </View>
+            )}
+            {locationScope === 'country' && (
+              <ThemedText style={[styles.helperText, { color: muted }]}>
+                Using {countryName || countryCode || 'your country'}.
+              </ThemedText>
+            )}
+            {locationScope === 'worldwide' && (
+              <ThemedText style={[styles.helperText, { color: muted }]}>
+                Search is global, no radius needed.
+              </ThemedText>
+            )}
           </Section>
         )}
 
@@ -798,6 +911,35 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <ThemedText type="defaultSemiBold">{title}</ThemedText>
       {children}
     </View>
+  );
+}
+
+function OptionPill({
+  label,
+  selected,
+  onPress,
+  borderColor,
+  activeBg,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+  borderColor: string;
+  activeBg: string;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[
+        styles.optionPill,
+        { borderColor },
+        selected && { backgroundColor: activeBg },
+      ]}
+    >
+      <ThemedText style={[styles.optionPillText, selected && styles.optionPillTextActive]}>
+        {label}
+      </ThemedText>
+    </Pressable>
   );
 }
 
@@ -972,40 +1114,6 @@ function TagConfigModal({
   );
 }
 
-function Input({
-  label,
-  value,
-  onChange,
-  borderColor,
-  inputBg,
-  placeholderColor,
-  textColor,
-  labelColor,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  borderColor: string;
-  inputBg: string;
-  placeholderColor: string;
-  textColor: string;
-  labelColor: string;
-}) {
-  return (
-    <View style={styles.inputGroup}>
-      <ThemedText style={[styles.label, { color: labelColor }]}>{label}</ThemedText>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        style={[styles.input, { borderColor, backgroundColor: inputBg, color: textColor }]}
-        keyboardType="numeric"
-        placeholder=""
-        placeholderTextColor={placeholderColor}
-      />
-    </View>
-  );
-}
-
 function calculateAge(date: Date): number {
   const today = new Date();
   let years = today.getFullYear() - date.getFullYear();
@@ -1147,6 +1255,9 @@ const styles = StyleSheet.create({
   label: {
     opacity: 0.7,
   },
+  helperText: {
+    fontSize: 12,
+  },
   roleRow: {
     flexDirection: 'row',
     gap: 12,
@@ -1191,6 +1302,25 @@ const styles = StyleSheet.create({
   chipText: {
     opacity: 0.8,
   },
+  optionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  optionPill: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  optionPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    opacity: 0.7,
+  },
+  optionPillTextActive: {
+    opacity: 1,
+  },
   locationPill: {
     flex: 1,
     paddingVertical: 8,
@@ -1211,20 +1341,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-  },
-  inlineRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  inputGroup: {
-    flex: 1,
-    gap: 6,
-  },
-  input: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
   },
   ageRow: {
     gap: 6,

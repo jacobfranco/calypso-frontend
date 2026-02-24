@@ -19,6 +19,9 @@ const RELIGION_CATEGORY = { key: 'religion', label: 'Religion' };
 const POLITICS_CATEGORY = { key: 'politics', label: 'Politics' };
 const LIFESTYLE_CATEGORY = { key: 'lifestyle', label: 'Lifestyle' };
 
+const COUNTRY_RADIUS_KM = 3000;
+const WORLDWIDE_RADIUS_KM = 30000;
+
 const FILTER_CATEGORIES = [
   RELATIONSHIP_CATEGORY,
   GENDER_CATEGORY,
@@ -214,13 +217,40 @@ export default function FiltersIndexScreen() {
       ageParts.push(`${filters.age.min}-${filters.age.max}`);
     }
     const age = ageParts.length ? ageParts.join(' · ') : 'Not set';
+    const radiusKm = filters.location?.radiusKm;
+    const scopeValue = filters.location?.scope;
+    const distanceUnit = filters.location?.distanceUnit;
+    const radiusValue =
+      distanceUnit === 'MI'
+        ? Math.round((radiusKm ?? 0) / 1.60934)
+        : Math.round(radiusKm ?? 0);
+    const radiusSuffix = distanceUnit === 'MI' ? 'mi' : 'km';
+    const scopeLabel =
+      scopeValue === 'WORLDWIDE'
+        ? 'Worldwide'
+        : scopeValue === 'COUNTRY'
+          ? 'My country'
+          : scopeValue === 'NEARBY'
+            ? null
+            : radiusKm === WORLDWIDE_RADIUS_KM
+              ? 'Worldwide'
+              : radiusKm === COUNTRY_RADIUS_KM
+                ? 'My country'
+                : null;
     const location =
-      locationName && filters.location?.radiusKm !== undefined
-        ? `${locationName} · ${filters.location.radiusKm}km`
-        : locationName ||
-          (filters.location?.lat !== undefined
-            ? `Lat ${filters.location.lat} · Lon ${filters.location.lon} · ${filters.location.radiusKm}km`
-            : 'Not set');
+      locationName
+        ? scopeLabel
+          ? `${locationName} · ${scopeLabel}`
+          : radiusKm !== undefined
+            ? `${locationName} · ${radiusValue}${radiusSuffix}`
+            : locationName
+        : scopeLabel
+          ? scopeLabel
+          : filters.location?.lat !== undefined
+            ? radiusKm !== undefined
+              ? `Lat ${filters.location.lat} · Lon ${filters.location.lon} · ${radiusValue}${radiusSuffix}`
+              : `Lat ${filters.location.lat} · Lon ${filters.location.lon}`
+            : 'Not set';
     const religionSelf = filters.religion?.self ? `Self: ${filters.religion.self}` : '';
     const religionImportance = filters.religion?.importance
       ? `Importance: ${ALIGNMENT_IMPORTANCE_LABELS[filters.religion.importance]}`

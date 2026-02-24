@@ -17,6 +17,8 @@ export type Account = {
 };
 
 export type Importance = 'NOT_IMPORTANT' | 'PREFERENCE' | 'DEALBREAKER';
+export type LocationScope = 'NEARBY' | 'COUNTRY' | 'WORLDWIDE';
+export type DistanceUnit = 'KM' | 'MI';
 
 export type ModeFilter = {
   self?: string;
@@ -40,6 +42,9 @@ export type LocationFilter = {
   lon?: number;
   radiusKm?: number;
   importance?: Importance;
+  scope?: LocationScope;
+  countryCode?: string;
+  distanceUnit?: DistanceUnit;
 };
 
 export type TagPreference = {
