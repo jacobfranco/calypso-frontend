@@ -70,6 +70,37 @@ export type Filters = {
 
 export type TagsResponse = Record<string, string[]>;
 
+export type PromptQuestion = {
+  promptId: string;
+  question: string;
+  topic?: string;
+  tags?: string[];
+};
+
+export type PromptResponse = {
+  responseId: string;
+  promptId: string;
+  question?: string;
+  topic?: string;
+  reaction?: string;
+  answerText?: string;
+  comment?: string;
+  targetAccountId?: number;
+  servedAt?: number;
+  answeredAt?: number;
+};
+
+export type PromptSuggestion = PromptQuestion & {
+  targetAccountId?: number;
+  targetScore?: number;
+};
+
+export type PromptResponsePayload = {
+  reaction?: string;
+  answerText?: string;
+  targetAccountId?: number;
+};
+
 export type TokenResponse = {
   access_token: string;
   token_type: string;
@@ -364,4 +395,87 @@ export async function fetchTags(kind: string): Promise<TagsResponse> {
     throw new Error(extractErrorMessage(json, res.status));
   }
   return json as TagsResponse;
+}
+
+export async function fetchPromptLibrary(): Promise<PromptQuestion[]> {
+  const res = await fetch(`${API_BASE_URL}/api/meta/prompts`);
+  const json = (await res.json()) as PromptQuestion[] | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!Array.isArray(json)) {
+    throw new Error('Unexpected response from /api/meta/prompts');
+  }
+  return json;
+}
+
+export async function fetchPromptResponses(
+  accountId: string,
+  token: string
+): Promise<PromptResponse[]> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/prompts`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as { responses?: PromptResponse[] } | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if ('responses' in json && Array.isArray(json.responses)) {
+    return json.responses;
+  }
+
+  return [];
+}
+
+export async function fetchNextPrompt(
+  accountId: string,
+  token: string
+): Promise<PromptSuggestion> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/prompts/next`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as PromptSuggestion | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (!('promptId' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/prompts/next');
+  }
+
+  return json;
+}
+
+export async function postPromptResponse(
+  accountId: string,
+  token: string,
+  promptId: string,
+  payload: PromptResponsePayload
+): Promise<PromptResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/prompts/${promptId}/response`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const json = (await res.json()) as PromptResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (!('responseId' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/prompts/{promptId}/response');
+  }
+
+  return json;
 }

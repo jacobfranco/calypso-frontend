@@ -91,11 +91,16 @@ export default function ProfileScreen() {
       {account && status !== 'loading' && (
         <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
           <Link href="/filters" asChild>
-            <Pressable style={[styles.primaryButton, { backgroundColor: primaryBg }]}
-            >
-              <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}
-              >
+            <Pressable style={[styles.secondaryButton, { borderColor: borderColor }]}>
+              <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>
                 Edit filters
+              </ThemedText>
+            </Pressable>
+          </Link>
+          <Link href="/prompts" asChild>
+            <Pressable style={[styles.secondaryButton, { borderColor: borderColor }]}>
+              <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>
+                Edit prompts
               </ThemedText>
             </Pressable>
           </Link>
@@ -162,6 +167,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   primaryButtonText: {
+    fontWeight: '600',
+  },
+  secondaryButton: {
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  secondaryButtonText: {
     fontWeight: '600',
   },
   muted: {
