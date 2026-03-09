@@ -110,6 +110,53 @@ export type PublicPromptSelection = {
   updatedAt: number;
 };
 
+export type PrivatePromptStatus = 'ACTIVE' | 'ANSWERED' | 'SKIPPED' | 'SNOOZED';
+
+export type PrivatePromptAssignment = {
+  instanceId: string;
+  accountId: number;
+  promptId: string;
+  scheduledAt: number;
+  surfacedAt?: number;
+  completedAt?: number;
+  status: PrivatePromptStatus;
+  snoozeUntil?: number;
+};
+
+export type PrivatePromptAnswer = {
+  instanceId: string;
+  accountId: number;
+  promptId: string;
+  body: string;
+  answeredAt: number;
+  signalTokens?: string[];
+};
+
+export type ActivePrivatePrompt = {
+  assignment: PrivatePromptAssignment;
+  prompt: PromptDefinition;
+  answer?: PrivatePromptAnswer;
+};
+
+export type SignalRecord = {
+  token: string;
+  source?: string;
+  sourceId?: string;
+  firstSeen?: number;
+  lastSeen?: number;
+  count?: number;
+  lastContext?: string;
+  intent?: string;
+  confidence?: number;
+  importance?: number;
+};
+
+export type SignalsResponse = {
+  accountId: number;
+  tokens: string[];
+  records: SignalRecord[];
+};
+
 export type TokenResponse = {
   access_token: string;
   token_type: string;
@@ -569,4 +616,147 @@ export async function postPublicPromptReaction(
     throw new Error(extractErrorMessage(json, res.status));
   }
   return;
+}
+
+export async function fetchActivePrivatePrompt(
+  accountId: string,
+  token: string
+): Promise<ActivePrivatePrompt | null> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/agent/private-prompt`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (res.status === 204) return null;
+
+  const json = (await res.json()) as ActivePrivatePrompt | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('assignment' in json) || !('prompt' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/agent/private-prompt');
+  }
+  return json;
+}
+
+export async function postPrivatePromptAnswer(
+  accountId: string,
+  token: string,
+  instanceId: string,
+  body: string
+): Promise<ActivePrivatePrompt> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/agent/private-prompt/${instanceId}/answer`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ body }),
+    }
+  );
+
+  const json = (await res.json()) as ActivePrivatePrompt | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('assignment' in json) || !('prompt' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/agent/private-prompt/{instanceId}/answer');
+  }
+  return json;
+}
+
+export async function postPrivatePromptSkip(
+  accountId: string,
+  token: string,
+  instanceId: string
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/agent/private-prompt/${instanceId}/skip`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  if (!res.ok) {
+    const json = (await res.json()) as ErrorDetails;
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+}
+
+export async function postPrivatePromptSnooze(
+  accountId: string,
+  token: string,
+  instanceId: string,
+  snoozeUntil?: number
+): Promise<void> {
+  const body = snoozeUntil ? { snoozeUntil } : {};
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/agent/private-prompt/${instanceId}/snooze`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+
+  if (!res.ok) {
+    const json = (await res.json()) as ErrorDetails;
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+}
+
+export async function postDebugSummonNextPrivatePrompt(
+  accountId: string,
+  token: string
+): Promise<ActivePrivatePrompt | null> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/agent/private-prompt/debug/next`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  if (res.status === 204) return null;
+
+  const json = (await res.json()) as ActivePrivatePrompt | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('assignment' in json) || !('prompt' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/agent/private-prompt/debug/next');
+  }
+  return json;
+}
+
+export async function fetchSignals(accountId: string, token: string): Promise<SignalsResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/signals`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (res.status === 204) {
+    return { accountId: Number(accountId), tokens: [], records: [] };
+  }
+
+  const json = (await res.json()) as SignalsResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('accountId' in json) || !('records' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/signals');
+  }
+  return json;
 }
