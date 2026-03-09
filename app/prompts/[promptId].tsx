@@ -13,11 +13,10 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
-  PromptQuestion,
-  PromptResponse,
-  fetchPromptLibrary,
-  fetchPromptResponses,
-  postPromptResponse,
+  PromptDefinition,
+  fetchPublicPromptLibrary,
+  fetchMyPublicPromptAnswers,
+  postPublicPromptAnswer,
 } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
@@ -30,8 +29,7 @@ export default function PromptDetailScreen() {
   const promptId = params.promptId ?? '';
 
   const [status, setStatus] = useState<Status>('idle');
-  const [prompt, setPrompt] = useState<PromptQuestion | null>(null);
-  const [response, setResponse] = useState<PromptResponse | null>(null);
+  const [prompt, setPrompt] = useState<PromptDefinition | null>(null);
   const [answerText, setAnswerText] = useState('');
   const [message, setMessage] = useState<string | null>(null);
 
@@ -70,15 +68,14 @@ export default function PromptDetailScreen() {
     setStatus('loading');
     setMessage(null);
     try {
-      const [promptLibrary, promptResponses] = await Promise.all([
-        fetchPromptLibrary(),
-        fetchPromptResponses(account.id, token),
+      const [promptLibrary, promptAnswers] = await Promise.all([
+        fetchPublicPromptLibrary(),
+        fetchMyPublicPromptAnswers(account.id, token),
       ]);
       const found = promptLibrary.find((item) => item.promptId === promptId) ?? null;
-      const existing = promptResponses.find((item) => item.promptId === promptId) ?? null;
+      const existing = promptAnswers.find((answer) => answer.promptId === promptId) ?? null;
       setPrompt(found);
-      setResponse(existing);
-      setAnswerText(existing?.answerText ?? '');
+      setAnswerText(existing?.body ?? '');
       setStatus('idle');
     } catch (error) {
       setStatus('error');
@@ -90,7 +87,7 @@ export default function PromptDetailScreen() {
     loadData();
   }, [loadData]);
 
-  const promptTitle = useMemo(() => prompt?.question ?? 'Prompt', [prompt?.question]);
+  const promptTitle = useMemo(() => prompt?.text ?? 'Prompt', [prompt?.text]);
 
   const handleSave = useCallback(async () => {
     if (!account || !token || !promptId) return;
@@ -103,10 +100,7 @@ export default function PromptDetailScreen() {
     setStatus('saving');
     setMessage(null);
     try {
-      const saved = await postPromptResponse(account.id, token, promptId, {
-        answerText: trimmed,
-      });
-      setResponse(saved);
+      await postPublicPromptAnswer(account.id, token, promptId, { body: trimmed });
       setStatus('idle');
       router.back();
     } catch (error) {
@@ -141,7 +135,7 @@ export default function PromptDetailScreen() {
           </View>
         ) : (
           <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-            <ThemedText type="defaultSemiBold">{prompt.question}</ThemedText>
+            <ThemedText type="defaultSemiBold">{prompt.text}</ThemedText>
             <TextInput
               value={answerText}
               onChangeText={setAnswerText}
@@ -150,11 +144,6 @@ export default function PromptDetailScreen() {
               style={[styles.input, { borderColor: border, backgroundColor: inputBg, color: inputText }]}
               multiline
             />
-            {response?.answeredAt ? (
-              <ThemedText style={[styles.mutedText, { color: muted }]}>
-                Last updated: {new Date(response.answeredAt).toLocaleDateString()}
-              </ThemedText>
-            ) : null}
             <Pressable
               onPress={handleSave}
               disabled={isBusy}

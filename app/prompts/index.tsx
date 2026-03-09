@@ -13,25 +13,24 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
-  PromptQuestion,
-  PromptResponse,
-  fetchPromptLibrary,
-  fetchPromptResponses,
+  PromptDefinition,
+  fetchPublicPromptLibrary,
+  fetchMyPublicPromptAnswers,
+  fetchPublicPromptSelection,
 } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
 type Status = 'idle' | 'loading' | 'error';
 
 type PromptRowProps = {
-  prompt: PromptQuestion;
+  prompt: PromptDefinition;
   answer?: string;
-  border: string;
   cardBorder: string;
   cardBg: string;
   muted: string;
 };
 
-function PromptRow({ prompt, answer, border, cardBorder, cardBg, muted }: PromptRowProps) {
+function PromptRow({ prompt, answer, cardBorder, cardBg, muted }: PromptRowProps) {
   return (
     <Link
       href={{
@@ -43,7 +42,7 @@ function PromptRow({ prompt, answer, border, cardBorder, cardBg, muted }: Prompt
       <Pressable style={({ pressed }) => [styles.rowPressable, pressed && styles.rowPressed]}>
         <View style={[styles.rowCard, { borderColor: cardBorder, backgroundColor: cardBg }]}>
           <View style={styles.rowHeader}>
-            <ThemedText type="defaultSemiBold">{prompt.question}</ThemedText>
+            <ThemedText type="defaultSemiBold">{prompt.text}</ThemedText>
             <ThemedText style={[styles.rowChevron, { color: muted }]}>›</ThemedText>
           </View>
           {answer ? (
@@ -60,8 +59,8 @@ function PromptRow({ prompt, answer, border, cardBorder, cardBg, muted }: Prompt
 export default function PromptsScreen() {
   const { account, token } = useAuth();
   const [status, setStatus] = useState<Status>('idle');
-  const [library, setLibrary] = useState<PromptQuestion[]>([]);
-  const [responses, setResponses] = useState<Record<string, PromptResponse>>({});
+  const [library, setLibrary] = useState<PromptDefinition[]>([]);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
   const [topicFilter, setTopicFilter] = useState<string>('all');
 
@@ -93,18 +92,29 @@ export default function PromptsScreen() {
     setStatus('loading');
     setMessage(null);
     try {
-      const [promptLibrary, promptResponses] = await Promise.all([
-        fetchPromptLibrary(),
-        fetchPromptResponses(account.id, token),
+      const [promptLibrary, promptAnswers, promptSelection] = await Promise.all([
+        fetchPublicPromptLibrary(),
+        fetchMyPublicPromptAnswers(account.id, token),
+        fetchPublicPromptSelection(account.id, token),
       ]);
-      const responseMap: Record<string, PromptResponse> = {};
-      promptResponses.forEach((response) => {
-        if (response.promptId) {
-          responseMap[response.promptId] = response;
+      const answerMap: Record<string, string> = {};
+      promptAnswers.forEach((answer) => {
+        if (answer.promptId) {
+          answerMap[answer.promptId] = answer.body;
         }
       });
-      setLibrary(promptLibrary);
-      setResponses(responseMap);
+      const selectionIds = Array.isArray(promptSelection?.selectedPromptIds)
+        ? promptSelection.selectedPromptIds
+        : [];
+      setAnswers(answerMap);
+      const filtered = promptLibrary.filter((item) => item.bank === 'PUBLIC');
+      if (selectionIds.length) {
+        const selected = filtered.filter((item) => selectionIds.includes(item.promptId));
+        const rest = filtered.filter((item) => !selectionIds.includes(item.promptId));
+        setLibrary([...selected, ...rest]);
+      } else {
+        setLibrary(filtered);
+      }
       setStatus('idle');
     } catch (error) {
       setStatus('error');
@@ -125,16 +135,6 @@ export default function PromptsScreen() {
     }, [account, token, loadData])
   );
 
-  const answeredPrompts = useMemo(
-    () => library.filter((prompt) => responses[prompt.promptId]),
-    [library, responses]
-  );
-
-  const availablePrompts = useMemo(
-    () => library.filter((prompt) => !responses[prompt.promptId]),
-    [library, responses]
-  );
-
   const topics = useMemo(() => {
     const set = new Set<string>();
     library.forEach((prompt) => {
@@ -143,7 +143,18 @@ export default function PromptsScreen() {
     return ['all', ...Array.from(set).sort()];
   }, [library]);
 
+  const answeredPrompts = useMemo(
+    () => library.filter((prompt) => answers[prompt.promptId]),
+    [answers, library]
+  );
+
+  const availablePrompts = useMemo(
+    () => library.filter((prompt) => !answers[prompt.promptId]),
+    [answers, library]
+  );
+
   const filteredAvailable = useMemo(() => {
+    if (availablePrompts.length === 0) return [];
     if (topicFilter === 'all') return availablePrompts;
     return availablePrompts.filter((prompt) => prompt.topic === topicFilter);
   }, [availablePrompts, topicFilter]);
@@ -186,8 +197,7 @@ export default function PromptsScreen() {
             <PromptRow
               key={prompt.promptId}
               prompt={prompt}
-              answer={responses[prompt.promptId]?.answerText}
-              border={border}
+              answer={answers[prompt.promptId]}
               cardBorder={cardBorder}
               cardBg={cardBg}
               muted={muted}
@@ -240,7 +250,6 @@ export default function PromptsScreen() {
             <PromptRow
               key={prompt.promptId}
               prompt={prompt}
-              border={border}
               cardBorder={cardBorder}
               cardBg={cardBg}
               muted={muted}
@@ -252,7 +261,7 @@ export default function PromptsScreen() {
   );
 }
 
-  const styles = StyleSheet.create({
+const styles = StyleSheet.create({
   container: {
     flex: 1,
     paddingTop: 24,

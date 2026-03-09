@@ -23,10 +23,14 @@ import { useAuth } from '@/lib/auth';
 import {
   Filters,
   Importance,
+  PromptDefinition,
   TagPreference,
   TagsResponse,
+  fetchPublicPromptLibrary,
   fetchTags,
   postFilters,
+  postPublicPromptAnswer,
+  postPublicPromptSelection,
   requestPhoneCode,
   verifyPhoneCode,
 } from '@/lib/api';
@@ -44,6 +48,7 @@ const STEPS = [
   'relationship',
   'lifestyle',
   'location',
+  'prompts',
 ] as const;
 
 type StepKey = (typeof STEPS)[number];
@@ -61,6 +66,8 @@ const RADIUS_MIN = 1;
 const RADIUS_MAX = 100;
 const COUNTRY_RADIUS_KM = 3000;
 const WORLDWIDE_RADIUS_KM = 30000;
+const PROMPT_MIN_SELECTION = 1;
+const PROMPT_MAX_SELECTION = 5;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -111,6 +118,13 @@ export default function OnboardingScreen() {
   const [religionOptions, setReligionOptions] = useState<string[]>([]);
   const [politicsOptions, setPoliticsOptions] = useState<string[]>([]);
   const [lifestyleTagGroups, setLifestyleTagGroups] = useState<TagsResponse | null>(null);
+  const [promptLibrary, setPromptLibrary] = useState<PromptDefinition[]>([]);
+  const [promptSelection, setPromptSelection] = useState<string[]>([]);
+  const [promptAnswers, setPromptAnswers] = useState<Record<string, string>>({});
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptError, setPromptError] = useState<string | null>(null);
+  const [promptEditorPromptId, setPromptEditorPromptId] = useState<string | null>(null);
+  const [promptEditorAnswer, setPromptEditorAnswer] = useState('');
 
   const handleNameChange = (text: string) => {
     setName(text);
@@ -222,6 +236,36 @@ export default function OnboardingScreen() {
     setAgeRange(defaultAgeRange(age));
   }, [age]);
 
+  useEffect(() => {
+    if (step === 'prompts') return;
+    setPromptEditorPromptId(null);
+    setPromptEditorAnswer('');
+  }, [step]);
+
+  useEffect(() => {
+    if (step !== 'prompts') return;
+    let mounted = true;
+    setPromptLoading(true);
+    setPromptError(null);
+    fetchPublicPromptLibrary()
+      .then((library) => {
+        if (!mounted) return;
+        setPromptLibrary(library);
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        setPromptError(error instanceof Error ? error.message : 'Unable to load prompts');
+        setPromptLibrary([]);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setPromptLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [step]);
+
   const canContinue = useMemo(() => {
     if (loading) return false;
     if (step === 'welcome') return true;
@@ -240,6 +284,20 @@ export default function OnboardingScreen() {
       if (locationScope === 'nearby') return radiusValue >= RADIUS_MIN;
       return true;
     }
+    if (step === 'prompts') {
+      if (promptLoading) return false;
+      if (promptEditorPromptId) return false;
+      const selectedCount = promptSelection.length;
+      const answeredCount = promptSelection.filter((id) => {
+        const text = promptAnswers[id];
+        return text && text.trim().length > 0;
+      }).length;
+      return (
+        selectedCount >= PROMPT_MIN_SELECTION
+        && selectedCount <= PROMPT_MAX_SELECTION
+        && answeredCount === selectedCount
+      );
+    }
     return false;
   }, [
     age,
@@ -253,6 +311,10 @@ export default function OnboardingScreen() {
     name,
     phone,
     politics,
+    promptAnswers,
+    promptEditorPromptId,
+    promptLoading,
+    promptSelection.length,
     radiusValue,
     religion,
     relationshipMode,
@@ -275,7 +337,58 @@ export default function OnboardingScreen() {
     return prefs;
   };
 
+  const openPromptEditor = (promptId: string) => {
+    setMessage(null);
+    const alreadySelected = promptSelection.includes(promptId);
+    if (!alreadySelected && promptSelection.length >= PROMPT_MAX_SELECTION) {
+      setMessage(`Pick no more than ${PROMPT_MAX_SELECTION} prompts.`);
+      return;
+    }
+    if (!alreadySelected) {
+      setPromptSelection((prev) => [...prev, promptId]);
+    }
+    setPromptEditorPromptId(promptId);
+    setPromptEditorAnswer(promptAnswers[promptId] ?? '');
+  };
+
+  const closePromptEditor = () => {
+    setPromptEditorPromptId(null);
+    setPromptEditorAnswer('');
+  };
+
+  const savePromptAnswer = () => {
+    if (!promptEditorPromptId) return;
+    const trimmed = promptEditorAnswer.trim();
+    if (!trimmed) {
+      setMessage('Please write an answer before saving.');
+      return;
+    }
+    setPromptAnswers((prev) => ({
+      ...prev,
+      [promptEditorPromptId]: trimmed,
+    }));
+    setMessage(null);
+    closePromptEditor();
+  };
+
+  const removePromptSelection = (promptId: string) => {
+    setMessage(null);
+    setPromptSelection((prev) => prev.filter((item) => item !== promptId));
+    setPromptAnswers((existing) => {
+      const next = { ...existing };
+      delete next[promptId];
+      return next;
+    });
+    if (promptEditorPromptId === promptId) {
+      closePromptEditor();
+    }
+  };
+
   const handleBack = () => {
+    if (step === 'prompts' && promptEditorPromptId) {
+      closePromptEditor();
+      return;
+    }
     setMessage(null);
     setStepIndex((prev) => Math.max(0, prev - 1));
   };
@@ -356,6 +469,52 @@ export default function OnboardingScreen() {
         setMessage('Please verify your phone number.');
         return;
       }
+      setStepIndex((prev) => prev + 1);
+      return;
+    }
+
+    if (step === 'prompts') {
+      if (promptEditorPromptId) {
+        setMessage('Save this prompt answer before finishing.');
+        return;
+      }
+      const selectedCount = promptSelection.length;
+      const answeredCount = promptSelection.filter((id) => {
+        const text = promptAnswers[id];
+        return text && text.trim().length > 0;
+      }).length;
+      if (selectedCount < PROMPT_MIN_SELECTION) {
+        setMessage(`Pick at least ${PROMPT_MIN_SELECTION} prompt to answer.`);
+        return;
+      }
+      if (selectedCount > PROMPT_MAX_SELECTION) {
+        setMessage(`Pick no more than ${PROMPT_MAX_SELECTION} prompts.`);
+        return;
+      }
+      if (answeredCount < selectedCount) {
+        setMessage('Please answer each selected prompt.');
+        return;
+      }
+      if (!verificationToken) {
+        setMessage('Please verify your phone number.');
+        return;
+      }
+      if (!birthday || age === null) {
+        setMessage('Please select your birthday.');
+        return;
+      }
+      if (age < MIN_AGE) {
+        setMessage('You need to be at least 18 to sign up.');
+        return;
+      }
+      if (lat === null || lon === null) {
+        setMessage('Location is required to use the app. Please enable location services.');
+        return;
+      }
+      if (locationScope === 'country' && !countryCode) {
+        setMessage('We could not determine your country. Please try again.');
+        return;
+      }
       setLoading(true);
       try {
         const { account, token } = await completePhoneSignup({
@@ -380,7 +539,8 @@ export default function OnboardingScreen() {
             : locationScope === 'country'
               ? 'COUNTRY'
               : 'WORLDWIDE';
-        const distanceUnit = locationScope === 'nearby' ? (radiusUnit === 'mi' ? 'MI' : 'KM') : undefined;
+        const distanceUnit =
+          locationScope === 'nearby' ? (radiusUnit === 'mi' ? 'MI' : 'KM') : undefined;
         const filtersPayload: Filters = {
           relationshipMode: { self: relationshipMode },
           gender: {
@@ -413,6 +573,13 @@ export default function OnboardingScreen() {
         }
 
         await postFilters(account.id, token, filtersPayload);
+
+        const responses = promptSelection.map((promptId) => {
+          const body = (promptAnswers[promptId] ?? '').trim();
+          return postPublicPromptAnswer(account.id, token, promptId, { body });
+        });
+        await Promise.all(responses);
+        await postPublicPromptSelection(account.id, token, promptSelection);
       } catch (error) {
         const messageText =
           error instanceof Error ? error.message : 'Unable to finish onboarding';
@@ -499,8 +666,15 @@ export default function OnboardingScreen() {
     if (step === 'relationship') return 'Relationship mode';
     if (step === 'lifestyle') return 'Lifestyle boundaries';
     if (step === 'location') return 'Where are you';
+    if (step === 'prompts' && promptEditorPromptId) return 'Answer prompt';
+    if (step === 'prompts') return 'Pick prompts';
     return 'Onboarding';
-  }, [step]);
+  }, [promptEditorPromptId, step]);
+
+  const isPromptEditorOpen =
+    step === 'prompts'
+    && promptEditorPromptId !== null
+    && promptLibrary.some((prompt) => prompt.promptId === promptEditorPromptId);
 
   const renderStepContent = () => {
     if (step === 'welcome') {
@@ -892,6 +1066,124 @@ export default function OnboardingScreen() {
       );
     }
 
+    if (step === 'prompts') {
+      const selectedCount = promptSelection.length;
+      const answeredCount = promptSelection.filter((id) => {
+        const text = promptAnswers[id];
+        return text && text.trim().length > 0;
+      }).length;
+      const editingPrompt = promptEditorPromptId
+        ? promptLibrary.find((prompt) => prompt.promptId === promptEditorPromptId) ?? null
+        : null;
+      if (editingPrompt) {
+        return (
+          <View style={styles.section}>
+            <ThemedText style={[styles.label, { color: muted }]}>Answer prompt</ThemedText>
+            <View style={[styles.promptCard, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <ThemedText type="defaultSemiBold">{editingPrompt.text}</ThemedText>
+              <TextInput
+                value={promptEditorAnswer}
+                onChangeText={setPromptEditorAnswer}
+                placeholder="Write your answer here..."
+                placeholderTextColor={placeholderColor}
+                style={[
+                  styles.promptAnswerInput,
+                  { borderColor: borderColor, backgroundColor: inputBg, color: inputText },
+                ]}
+                multiline
+              />
+            </View>
+            <View style={styles.promptEditorActions}>
+              <Pressable style={[styles.secondaryButton, { borderColor }]} onPress={closePromptEditor}>
+                <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>Back to list</ThemedText>
+              </Pressable>
+              <Pressable
+                style={[styles.primaryButton, { backgroundColor: primaryBg }]}
+                onPress={savePromptAnswer}
+              >
+                <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}>Save</ThemedText>
+              </Pressable>
+            </View>
+          </View>
+        );
+      }
+      return (
+        <View style={styles.section}>
+          <ThemedText style={[styles.label, { color: muted }]}>
+            Pick 1 to 5 prompts to answer
+          </ThemedText>
+          <ThemedText style={[styles.helperText, { color: muted }]}>
+            Saved {answeredCount} of {selectedCount} selected
+          </ThemedText>
+          {promptLoading && (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator />
+              <ThemedText style={[styles.mutedText, { color: muted }]}>Loading prompts…</ThemedText>
+            </View>
+          )}
+          {promptError && (
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <ThemedText style={[styles.mutedText, { color: muted }]}>{promptError}</ThemedText>
+            </View>
+          )}
+          {!promptLoading && !promptError && promptLibrary.length === 0 ? (
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <ThemedText style={[styles.mutedText, { color: muted }]}>
+                No prompts available right now.
+              </ThemedText>
+            </View>
+          ) : null}
+          {promptLibrary.map((prompt) => {
+            const selected = promptSelection.includes(prompt.promptId);
+            const savedAnswer = (promptAnswers[prompt.promptId] ?? '').trim();
+            const answered = savedAnswer.length > 0;
+            return (
+              <View key={prompt.promptId} style={styles.promptItem}>
+                <Pressable
+                  onPress={() => openPromptEditor(prompt.promptId)}
+                  style={({ pressed }) => [styles.promptPressable, pressed && styles.promptPressed]}
+                >
+                  <View
+                    style={[
+                      styles.promptCard,
+                      { borderColor: cardBorder, backgroundColor: cardBg },
+                      selected && { borderColor: primaryBg },
+                    ]}
+                  >
+                    <ThemedText type="defaultSemiBold">{prompt.text}</ThemedText>
+                    {answered ? (
+                      <ThemedText style={[styles.mutedText, { color: muted }]} numberOfLines={3}>
+                        {savedAnswer}
+                      </ThemedText>
+                    ) : (
+                      <ThemedText style={[styles.mutedText, { color: muted }]}>
+                        {selected ? 'Selected. Tap to answer.' : 'Tap to select and answer.'}
+                      </ThemedText>
+                    )}
+                    {selected ? (
+                      <ThemedText style={[styles.promptStatusText, { color: muted }]}>
+                        {answered ? 'Answered' : 'Awaiting answer'}
+                      </ThemedText>
+                    ) : null}
+                  </View>
+                </Pressable>
+                {selected ? (
+                  <Pressable
+                    onPress={() => removePromptSelection(prompt.promptId)}
+                    style={[styles.promptRemoveButton, { borderColor }]}
+                  >
+                    <ThemedText style={[styles.promptRemoveButtonText, { color: muted }]}>
+                      Remove
+                    </ThemedText>
+                  </Pressable>
+                ) : null}
+              </View>
+            );
+          })}
+        </View>
+      );
+    }
+
     return null;
   };
 
@@ -928,26 +1220,28 @@ export default function OnboardingScreen() {
             </View>
           )}
 
-          <View style={styles.actionRow}>
-            {stepIndex > 0 ? (
-              <Pressable style={[styles.secondaryButton, { borderColor }]} onPress={handleBack}>
-                <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>Back</ThemedText>
+          {!isPromptEditorOpen ? (
+            <View style={styles.actionRow}>
+              {stepIndex > 0 ? (
+                <Pressable style={[styles.secondaryButton, { borderColor }]} onPress={handleBack}>
+                  <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>Back</ThemedText>
+                </Pressable>
+              ) : null}
+              <Pressable
+                style={[
+                  styles.primaryButton,
+                  { backgroundColor: primaryBg },
+                  !canContinue && styles.primaryButtonDisabled,
+                ]}
+                onPress={handleContinue}
+                disabled={!canContinue}
+              >
+                <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}>
+                  {step === 'prompts' ? 'Finish' : 'Continue'}
+                </ThemedText>
               </Pressable>
-            ) : null}
-            <Pressable
-              style={[
-                styles.primaryButton,
-                { backgroundColor: primaryBg },
-                !canContinue && styles.primaryButtonDisabled,
-              ]}
-              onPress={handleContinue}
-              disabled={!canContinue}
-            >
-              <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}>
-                {step === 'location' ? 'Finish' : 'Continue'}
-              </ThemedText>
-            </Pressable>
-          </View>
+            </View>
+          ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
     </ThemedView>
@@ -1096,6 +1390,52 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     padding: 8,
+  },
+  promptItem: {
+    gap: 8,
+  },
+  promptPressable: {
+    borderRadius: 16,
+  },
+  promptPressed: {
+    opacity: 0.9,
+  },
+  promptCard: {
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 8,
+  },
+  promptAnswerInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    minHeight: 100,
+    textAlignVertical: 'top',
+  },
+  promptStatusText: {
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    opacity: 0.8,
+  },
+  promptRemoveButton: {
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  promptRemoveButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  promptEditorActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   message: {
     gap: 6,

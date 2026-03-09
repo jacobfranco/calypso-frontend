@@ -70,35 +70,44 @@ export type Filters = {
 
 export type TagsResponse = Record<string, string[]>;
 
-export type PromptQuestion = {
+export type PromptDefinition = {
   promptId: string;
-  question: string;
+  bank: 'PUBLIC' | 'PRIVATE';
+  text: string;
   topic?: string;
   tags?: string[];
+  version?: number;
 };
 
-export type PromptResponse = {
-  responseId: string;
+export type PublicPromptAnswer = {
+  answerId: string;
   promptId: string;
-  question?: string;
-  topic?: string;
-  reaction?: string;
-  answerText?: string;
-  comment?: string;
-  targetAccountId?: number;
-  servedAt?: number;
-  answeredAt?: number;
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+  deleted?: boolean;
 };
 
-export type PromptSuggestion = PromptQuestion & {
-  targetAccountId?: number;
-  targetScore?: number;
+export type PublicPromptFeedCard = {
+  answerId: string;
+  promptId: string;
+  promptText: string;
+  body: string;
+  createdAt: number;
 };
 
-export type PromptResponsePayload = {
-  reaction?: string;
-  answerText?: string;
-  targetAccountId?: number;
+export type PublicPromptAnswerPayload = {
+  body: string;
+};
+
+export type PublicPromptReactionPayload = {
+  reaction: 'LIKE' | 'DISLIKE' | 'SKIP';
+};
+
+export type PublicPromptSelection = {
+  accountId: number;
+  selectedPromptIds: string[];
+  updatedAt: number;
 };
 
 export type TokenResponse = {
@@ -397,85 +406,167 @@ export async function fetchTags(kind: string): Promise<TagsResponse> {
   return json as TagsResponse;
 }
 
-export async function fetchPromptLibrary(): Promise<PromptQuestion[]> {
-  const res = await fetch(`${API_BASE_URL}/api/meta/prompts`);
-  const json = (await res.json()) as PromptQuestion[] | ErrorDetails;
+export async function fetchPublicPromptLibrary(): Promise<PromptDefinition[]> {
+  const res = await fetch(`${API_BASE_URL}/api/meta/prompts/public`);
+  const json = (await res.json()) as PromptDefinition[] | ErrorDetails;
   if (!res.ok) {
     throw new Error(extractErrorMessage(json, res.status));
   }
   if (!Array.isArray(json)) {
-    throw new Error('Unexpected response from /api/meta/prompts');
+    throw new Error('Unexpected response from /api/meta/prompts/public');
   }
   return json;
 }
 
-export async function fetchPromptResponses(
+export async function fetchPublicPromptFeed(
   accountId: string,
-  token: string
-): Promise<PromptResponse[]> {
-  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/prompts`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  token: string,
+  limit = 1
+): Promise<PublicPromptFeedCard[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/public-prompt-feed?limit=${limit}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
 
-  const json = (await res.json()) as { responses?: PromptResponse[] } | ErrorDetails;
+  const json = (await res.json()) as PublicPromptFeedCard[] | ErrorDetails;
   if (!res.ok) {
     throw new Error(extractErrorMessage(json, res.status));
   }
 
-  if ('responses' in json && Array.isArray(json.responses)) {
-    return json.responses;
-  }
-
-  return [];
-}
-
-export async function fetchNextPrompt(
-  accountId: string,
-  token: string
-): Promise<PromptSuggestion> {
-  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/prompts/next`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  const json = (await res.json()) as PromptSuggestion | ErrorDetails;
-  if (!res.ok) {
-    throw new Error(extractErrorMessage(json, res.status));
-  }
-
-  if (!('promptId' in json)) {
-    throw new Error('Unexpected response from /api/accounts/{id}/prompts/next');
+  if (!Array.isArray(json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/public-prompt-feed');
   }
 
   return json;
 }
 
-export async function postPromptResponse(
+export async function fetchMyPublicPromptAnswers(
+  accountId: string,
+  token: string
+): Promise<PublicPromptAnswer[]> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/public-prompts/answers`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as PublicPromptAnswer[] | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (!Array.isArray(json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/public-prompts/answers');
+  }
+
+  return json;
+}
+
+export async function postPublicPromptAnswer(
   accountId: string,
   token: string,
   promptId: string,
-  payload: PromptResponsePayload
-): Promise<PromptResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/prompts/${promptId}/response`, {
+  payload: PublicPromptAnswerPayload
+): Promise<PublicPromptAnswer> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/public-prompts/${promptId}/answer`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  const json = (await res.json()) as PublicPromptAnswer | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (!('answerId' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/public-prompts/{promptId}/answer');
+  }
+
+  return json;
+}
+
+export async function fetchPublicPromptSelection(
+  accountId: string,
+  token: string
+): Promise<PublicPromptSelection | null> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/public-prompts/selection`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (res.status === 204) return null;
+
+  const json = (await res.json()) as PublicPromptSelection | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (!('accountId' in json)) {
+    return null;
+  }
+
+  return json;
+}
+
+export async function postPublicPromptSelection(
+  accountId: string,
+  token: string,
+  selectedPromptIds: string[]
+): Promise<PublicPromptSelection> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/public-prompts/selection`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ selectedPromptIds }),
   });
 
-  const json = (await res.json()) as PromptResponse | ErrorDetails;
+  const json = (await res.json()) as PublicPromptSelection | ErrorDetails;
   if (!res.ok) {
     throw new Error(extractErrorMessage(json, res.status));
   }
 
-  if (!('responseId' in json)) {
-    throw new Error('Unexpected response from /api/accounts/{id}/prompts/{promptId}/response');
+  if (!('accountId' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/public-prompts/selection');
   }
 
   return json;
+}
+
+export async function postPublicPromptReaction(
+  accountId: string,
+  token: string,
+  answerId: string,
+  payload: PublicPromptReactionPayload
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/public-prompt-feed/${answerId}/reaction`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  const json = (await res.json()) as Record<string, unknown> | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  return;
 }
