@@ -35,6 +35,7 @@ import {
   verifyPhoneCode,
 } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
+import { formatTagGroupLabel, formatTagLabel } from '@/lib/tag-labels';
 
 const STEPS = [
   'welcome',
@@ -658,13 +659,13 @@ export default function OnboardingScreen() {
     if (step === 'welcome') return 'Welcome to Calypso';
     if (step === 'phone') return 'Your phone number';
     if (step === 'verify') return 'Verify your number';
-    if (step === 'name') return 'Your name';
-    if (step === 'dob') return 'Your birthday';
-    if (step === 'gender') return 'Your gender';
-    if (step === 'religion') return 'Your religion';
-    if (step === 'politics') return 'Your politics';
+    if (step === 'name') return 'Name';
+    if (step === 'dob') return 'Age';
+    if (step === 'gender') return 'Gender';
+    if (step === 'religion') return 'Religion';
+    if (step === 'politics') return 'Politics';
     if (step === 'relationship') return 'Relationship mode';
-    if (step === 'lifestyle') return 'Lifestyle boundaries';
+    if (step === 'lifestyle') return 'Lifestyle';
     if (step === 'location') return 'Where are you';
     if (step === 'prompts' && promptEditorPromptId) return 'Answer prompt';
     if (step === 'prompts') return 'Pick prompts';
@@ -680,7 +681,6 @@ export default function OnboardingScreen() {
     if (step === 'welcome') {
       return (
         <View style={styles.section}>
-          <ThemedText type="title">Welcome</ThemedText>
           <ThemedText style={[styles.mutedText, { color: muted }]}>
             Let&apos;s set up your profile in a few quick steps.
           </ThemedText>
@@ -789,14 +789,15 @@ export default function OnboardingScreen() {
     }
 
     if (step === 'gender') {
+      const options = genderOptions.length ? genderOptions : ['woman', 'man', 'nonbinary'];
       return (
         <View style={styles.section}>
           <ThemedText style={[styles.label, { color: muted }]}>You are</ThemedText>
           <View style={styles.optionRow}>
-            {(genderOptions.length ? genderOptions : ['Woman', 'Man', 'Non-binary']).map((option) => (
+            {options.map((option) => (
               <OptionPill
                 key={option}
-                label={option}
+                label={formatTagLabel(option)}
                 selected={gender === option}
                 onPress={() => setGender(option)}
                 borderColor={borderColor}
@@ -806,10 +807,10 @@ export default function OnboardingScreen() {
           </View>
           <ThemedText style={[styles.label, { color: muted }]}>Seeking</ThemedText>
           <View style={styles.optionRow}>
-            {(genderOptions.length ? genderOptions : ['Woman', 'Man', 'Non-binary']).map((option) => (
+            {options.map((option) => (
               <OptionPill
                 key={`seeking-${option}`}
-                label={option}
+                label={formatTagLabel(option)}
                 selected={genderSeeking.includes(option)}
                 onPress={() => setGenderSeeking((prev) => toggleItem(prev, option))}
                 borderColor={borderColor}
@@ -830,7 +831,7 @@ export default function OnboardingScreen() {
             {options.map((option) => (
               <OptionPill
                 key={option}
-                label={option}
+                label={formatTagLabel(option)}
                 selected={religion === option}
                 onPress={() => setReligion(option)}
                 borderColor={borderColor}
@@ -868,7 +869,7 @@ export default function OnboardingScreen() {
             {options.map((option) => (
               <OptionPill
                 key={option}
-                label={option}
+                label={formatTagLabel(option)}
                 selected={politics === option}
                 onPress={() => setPolitics(option)}
                 borderColor={borderColor}
@@ -898,7 +899,6 @@ export default function OnboardingScreen() {
     if (step === 'relationship') {
       return (
         <View style={styles.section}>
-          <ThemedText style={[styles.label, { color: muted }]}>Relationship mode</ThemedText>
           <View style={styles.optionRow}>
             {RELATIONSHIP_OPTIONS.map((option) => (
               <OptionPill
@@ -925,20 +925,26 @@ export default function OnboardingScreen() {
       return (
         <View style={styles.section}>
           <ThemedText style={[styles.label, { color: muted }]}>
-            Select your lifestyle (optional)
+            Select your lifestyle preferences (optional)
           </ThemedText>
           {lifestyleGroups.map(([group, options]) => {
             const groupImportance = lifestyleImportanceByGroup[group] ?? 'NOT_IMPORTANT';
             return (
-              <View key={group} style={styles.groupBlock}>
+              <View
+                key={group}
+                style={[
+                  styles.groupBlock,
+                  { borderColor: cardBorder, backgroundColor: cardBg },
+                ]}
+              >
                 <ThemedText style={[styles.groupTitle, { color: muted }]}>
-                  {formatGroupLabel(group)}
+                  {formatTagGroupLabel(group)}
                 </ThemedText>
                 <View style={styles.optionRow}>
                   {options.map((option) => (
                     <OptionPill
                       key={option}
-                      label={option}
+                      label={formatTagLabel(option)}
                       selected={lifestyleSelections.includes(option)}
                       onPress={() =>
                         setLifestyleSelections((prev) => {
@@ -1072,9 +1078,69 @@ export default function OnboardingScreen() {
         const text = promptAnswers[id];
         return text && text.trim().length > 0;
       }).length;
+      const selectedPromptIds = new Set(promptSelection);
+      const answeredPrompts = promptLibrary.filter((prompt) => {
+        const text = promptAnswers[prompt.promptId];
+        return Boolean(text && text.trim().length > 0);
+      });
+      const remainingPrompts = promptLibrary
+        .filter((prompt) => {
+          const text = promptAnswers[prompt.promptId];
+          return !text || text.trim().length === 0;
+        })
+        .sort((left, right) =>
+          Number(selectedPromptIds.has(right.promptId)) - Number(selectedPromptIds.has(left.promptId))
+        );
       const editingPrompt = promptEditorPromptId
         ? promptLibrary.find((prompt) => prompt.promptId === promptEditorPromptId) ?? null
         : null;
+      const renderPromptItem = (prompt: PromptDefinition) => {
+        const selected = selectedPromptIds.has(prompt.promptId);
+        const savedAnswer = (promptAnswers[prompt.promptId] ?? '').trim();
+        const answered = savedAnswer.length > 0;
+        return (
+          <View key={prompt.promptId} style={styles.promptItem}>
+            <Pressable
+              onPress={() => openPromptEditor(prompt.promptId)}
+              style={({ pressed }) => [styles.promptPressable, pressed && styles.promptPressed]}
+            >
+              <View
+                style={[
+                  styles.promptCard,
+                  { borderColor: cardBorder, backgroundColor: cardBg },
+                  selected && { borderColor: primaryBg },
+                ]}
+              >
+                <ThemedText type="defaultSemiBold">{prompt.text}</ThemedText>
+                {answered ? (
+                  <ThemedText style={[styles.mutedText, { color: muted }]} numberOfLines={3}>
+                    {savedAnswer}
+                  </ThemedText>
+                ) : (
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {selected ? 'Selected. Tap to answer.' : 'Tap to select and answer.'}
+                  </ThemedText>
+                )}
+                {selected ? (
+                  <ThemedText style={[styles.promptStatusText, { color: muted }]}>
+                    {answered ? 'Answered' : 'Awaiting answer'}
+                  </ThemedText>
+                ) : null}
+              </View>
+            </Pressable>
+            {selected ? (
+              <Pressable
+                onPress={() => removePromptSelection(prompt.promptId)}
+                style={[styles.promptRemoveButton, { borderColor }]}
+              >
+                <ThemedText style={[styles.promptRemoveButtonText, { color: muted }]}>
+                  Remove
+                </ThemedText>
+              </Pressable>
+            ) : null}
+          </View>
+        );
+      };
       if (editingPrompt) {
         return (
           <View style={styles.section}>
@@ -1133,53 +1199,39 @@ export default function OnboardingScreen() {
               </ThemedText>
             </View>
           ) : null}
-          {promptLibrary.map((prompt) => {
-            const selected = promptSelection.includes(prompt.promptId);
-            const savedAnswer = (promptAnswers[prompt.promptId] ?? '').trim();
-            const answered = savedAnswer.length > 0;
-            return (
-              <View key={prompt.promptId} style={styles.promptItem}>
-                <Pressable
-                  onPress={() => openPromptEditor(prompt.promptId)}
-                  style={({ pressed }) => [styles.promptPressable, pressed && styles.promptPressed]}
-                >
-                  <View
-                    style={[
-                      styles.promptCard,
-                      { borderColor: cardBorder, backgroundColor: cardBg },
-                      selected && { borderColor: primaryBg },
-                    ]}
-                  >
-                    <ThemedText type="defaultSemiBold">{prompt.text}</ThemedText>
-                    {answered ? (
-                      <ThemedText style={[styles.mutedText, { color: muted }]} numberOfLines={3}>
-                        {savedAnswer}
-                      </ThemedText>
-                    ) : (
-                      <ThemedText style={[styles.mutedText, { color: muted }]}>
-                        {selected ? 'Selected. Tap to answer.' : 'Tap to select and answer.'}
-                      </ThemedText>
-                    )}
-                    {selected ? (
-                      <ThemedText style={[styles.promptStatusText, { color: muted }]}>
-                        {answered ? 'Answered' : 'Awaiting answer'}
-                      </ThemedText>
-                    ) : null}
-                  </View>
-                </Pressable>
-                {selected ? (
-                  <Pressable
-                    onPress={() => removePromptSelection(prompt.promptId)}
-                    style={[styles.promptRemoveButton, { borderColor }]}
-                  >
-                    <ThemedText style={[styles.promptRemoveButtonText, { color: muted }]}>
-                      Remove
-                    </ThemedText>
-                  </Pressable>
-                ) : null}
+          {!promptLoading && !promptError && promptLibrary.length > 0 ? (
+            <>
+              <View style={styles.promptSectionHeader}>
+                <ThemedText type="defaultSemiBold">Answered prompts</ThemedText>
+                <ThemedText style={[styles.promptSectionCount, { color: muted }]}>
+                  {answeredPrompts.length}
+                </ThemedText>
               </View>
-            );
-          })}
+              {answeredPrompts.length === 0 ? (
+                <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>No answers yet.</ThemedText>
+                </View>
+              ) : (
+                answeredPrompts.map((prompt) => renderPromptItem(prompt))
+              )}
+              <View style={[styles.promptSectionDivider, { borderColor: cardBorder }]} />
+              <View style={styles.promptSectionHeader}>
+                <ThemedText type="defaultSemiBold">Remaining prompts</ThemedText>
+                <ThemedText style={[styles.promptSectionCount, { color: muted }]}>
+                  {remainingPrompts.length}
+                </ThemedText>
+              </View>
+              {remainingPrompts.length === 0 ? (
+                <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    You&apos;re done with prompts.
+                  </ThemedText>
+                </View>
+              ) : (
+                remainingPrompts.map((prompt) => renderPromptItem(prompt))
+              )}
+            </>
+          ) : null}
         </View>
       );
     }
@@ -1312,14 +1364,6 @@ function capitalize(value: string) {
   return value.length ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
 }
 
-function formatGroupLabel(value: string) {
-  if (!value) return value;
-  return value
-    .split('_')
-    .map((chunk) => capitalize(chunk))
-    .join(' ');
-}
-
 function toggleItem(list: string[], value: string) {
   if (list.includes(value)) {
     return list.filter((item) => item !== value);
@@ -1380,7 +1424,10 @@ const styles = StyleSheet.create({
     opacity: 1,
   },
   groupBlock: {
-    gap: 8,
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
   },
   groupTitle: {
     fontSize: 12,
@@ -1393,6 +1440,20 @@ const styles = StyleSheet.create({
   },
   promptItem: {
     gap: 8,
+  },
+  promptSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  promptSectionCount: {
+    fontSize: 12,
+    fontWeight: '600',
+    opacity: 0.7,
+  },
+  promptSectionDivider: {
+    borderTopWidth: 1,
+    marginVertical: 2,
   },
   promptPressable: {
     borderRadius: 16,

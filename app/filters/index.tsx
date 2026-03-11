@@ -10,6 +10,7 @@ import { useAuth } from '@/lib/auth';
 import { useFiltersDraft } from '@/lib/filters-draft';
 import { Importance } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
+import { formatTagLabel } from '@/lib/tag-labels';
 
 const RELATIONSHIP_CATEGORY = { key: 'relationship', label: 'Relationship mode' };
 const GENDER_CATEGORY = { key: 'gender', label: 'Gender' };
@@ -205,10 +206,12 @@ export default function FiltersIndexScreen() {
 
   const summaries = useMemo<Record<FilterCategoryKey, string>>(() => {
     const filters = draft ?? {};
-    const relationship = filters.relationshipMode?.self ?? 'Not set';
-    const genderSelf = filters.gender?.self ? `Self: ${filters.gender.self}` : '';
+    const relationship = filters.relationshipMode?.self
+      ? formatTagLabel(filters.relationshipMode.self)
+      : 'Not set';
+    const genderSelf = filters.gender?.self ? `Self: ${formatTagLabel(filters.gender.self)}` : '';
     const genderSeeking = (filters.gender?.seeking ?? []).length
-      ? `Seeking: ${(filters.gender?.seeking ?? []).join(', ')}`
+      ? `Seeking: ${(filters.gender?.seeking ?? []).map((tag) => formatTagLabel(tag)).join(', ')}`
       : '';
     const gender = [genderSelf, genderSeeking].filter(Boolean).join(' · ') || 'Not set';
     const ageParts = [];
@@ -251,21 +254,29 @@ export default function FiltersIndexScreen() {
               ? `Lat ${filters.location.lat} · Lon ${filters.location.lon} · ${radiusValue}${radiusSuffix}`
               : `Lat ${filters.location.lat} · Lon ${filters.location.lon}`
             : 'Not set';
-    const religionSelf = filters.religion?.self ? `Self: ${filters.religion.self}` : '';
+    const religionSelf = filters.religion?.self
+      ? `Self: ${formatTagLabel(filters.religion.self)}`
+      : '';
     const religionImportance = filters.religion?.importance
       ? `Importance: ${ALIGNMENT_IMPORTANCE_LABELS[filters.religion.importance]}`
       : '';
     const religion = [religionSelf, religionImportance].filter(Boolean).join(' · ') || 'Not set';
-    const politicsSelf = filters.politics?.self ? `Self: ${filters.politics.self}` : '';
+    const politicsSelf = filters.politics?.self
+      ? `Self: ${formatTagLabel(filters.politics.self)}`
+      : '';
     const politicsImportance = filters.politics?.importance
       ? `Importance: ${ALIGNMENT_IMPORTANCE_LABELS[filters.politics.importance]}`
       : '';
     const politics = [politicsSelf, politicsImportance].filter(Boolean).join(' · ') || 'Not set';
     const lifestyle = filters.lifestyle?.self?.length || filters.lifestyle?.preferences?.length
       ? [
-          filters.lifestyle?.self?.length ? `Self: ${filters.lifestyle?.self?.join(', ')}` : '',
+          filters.lifestyle?.self?.length
+            ? `Self: ${filters.lifestyle?.self?.map((tag) => formatTagLabel(tag)).join(', ')}`
+            : '',
           filters.lifestyle?.preferences?.length
-            ? `Preferences: ${filters.lifestyle?.preferences?.map((pref) => pref.tag).join(', ')}`
+            ? `Preferences: ${filters.lifestyle?.preferences
+              ?.map((pref) => formatTagLabel(pref.tag))
+              .join(', ')}`
             : '',
         ]
           .filter(Boolean)

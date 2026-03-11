@@ -21,6 +21,7 @@ import { useAuth } from '@/lib/auth';
 import { useFiltersDraft } from '@/lib/filters-draft';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useThemeColor } from '@/hooks/use-theme-color';
+import { formatTagGroupLabel, formatTagLabel } from '@/lib/tag-labels';
 
 const IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
   { label: 'Not important', value: 'NOT_IMPORTANT' },
@@ -71,18 +72,6 @@ const IMPORTANCE_RANK: Record<Importance, number> = {
 
 function maxImportance(left: Importance, right: Importance): Importance {
   return IMPORTANCE_RANK[left] >= IMPORTANCE_RANK[right] ? left : right;
-}
-
-function capitalize(value: string) {
-  return value.length ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
-}
-
-function formatGroupLabel(value: string) {
-  if (!value) return value;
-  return value
-    .split('_')
-    .map((chunk) => capitalize(chunk))
-    .join(' ');
 }
 
 function buildLifestyleGroupImportance(
@@ -897,8 +886,14 @@ export default function FiltersCategoryScreen() {
               const groupSelfTags = lifestyleSelf.filter((tag) => tags.includes(tag));
 
               return (
-                <View key={group} style={styles.groupSection}>
-                  <ThemedText type="defaultSemiBold">{formatGroupLabel(group)}</ThemedText>
+                <View
+                  key={group}
+                  style={[
+                    styles.groupSection,
+                    { borderColor, backgroundColor: cardBg },
+                  ]}
+                >
+                  <ThemedText type="defaultSemiBold">{formatTagGroupLabel(group)}</ThemedText>
                   <ThemedText style={[styles.label, { color: muted }]}>Your lifestyle</ThemedText>
                   <ChipRow
                     options={tags}
@@ -1015,8 +1010,9 @@ function TagSections({
 }) {
   const formatRoleLabel = (tags: string[]) => {
     if (!tags.length) return '+';
-    if (tags.length === 1) return tags[0];
-    return `${tags[0]} +${tags.length - 1}`;
+    const firstTag = formatTagLabel(tags[0]);
+    if (tags.length === 1) return firstTag;
+    return `${firstTag} +${tags.length - 1}`;
   };
 
   return (
@@ -1137,7 +1133,7 @@ function ChipRow({
                 active && { color: importanceStyle.text },
               ]}
             >
-              {option}
+              {formatTagLabel(option)}
             </ThemedText>
           </Pressable>
         );
@@ -1332,6 +1328,9 @@ const styles = StyleSheet.create({
   },
   groupSection: {
     gap: 12,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
   },
   saveButton: {
     paddingVertical: 14,
