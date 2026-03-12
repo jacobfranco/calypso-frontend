@@ -138,6 +138,17 @@ export type ActivePrivatePrompt = {
   answer?: PrivatePromptAnswer;
 };
 
+export type PrivatePromptChatTurnPayload = {
+  questionPart?: string;
+  userMessage: string;
+  conversation?: string[];
+};
+
+export type PrivatePromptChatTurnResponse = {
+  agentMessage: string;
+  needsMoreDetail: boolean;
+};
+
 export type SignalRecord = {
   token: string;
   source?: string;
@@ -644,7 +655,8 @@ export async function postPrivatePromptAnswer(
   accountId: string,
   token: string,
   instanceId: string,
-  body: string
+  body: string,
+  conversation?: string[]
 ): Promise<ActivePrivatePrompt> {
   const res = await fetch(
     `${API_BASE_URL}/api/accounts/${accountId}/agent/private-prompt/${instanceId}/answer`,
@@ -654,7 +666,7 @@ export async function postPrivatePromptAnswer(
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body, conversation }),
     }
   );
 
@@ -664,6 +676,36 @@ export async function postPrivatePromptAnswer(
   }
   if (!('assignment' in json) || !('prompt' in json)) {
     throw new Error('Unexpected response from /api/accounts/{id}/agent/private-prompt/{instanceId}/answer');
+  }
+  return json;
+}
+
+export async function postPrivatePromptChatTurn(
+  accountId: string,
+  token: string,
+  instanceId: string,
+  payload: PrivatePromptChatTurnPayload
+): Promise<PrivatePromptChatTurnResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/agent/private-prompt/${instanceId}/chat-turn`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  const json = (await res.json()) as PrivatePromptChatTurnResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('agentMessage' in json) || !('needsMoreDetail' in json)) {
+    throw new Error(
+      'Unexpected response from /api/accounts/{id}/agent/private-prompt/{instanceId}/chat-turn'
+    );
   }
   return json;
 }

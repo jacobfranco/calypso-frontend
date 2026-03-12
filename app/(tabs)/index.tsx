@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
@@ -21,6 +21,7 @@ import {
   fetchSignals,
   fetchPublicPromptFeed,
   postDebugSummonNextPrivatePrompt,
+  postPrivatePromptChatTurn,
   postPrivatePromptAnswer,
   postPrivatePromptSkip,
   postPublicPromptReaction,
@@ -29,12 +30,59 @@ import {
 } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
+type PrivatePromptChatMessage = {
+  role: 'agent' | 'user';
+  text: string;
+};
+
+const PRIVATE_PROMPT_PRIVACY_NOTE =
+  'Your answers stay private and are only used for matchmaking.';
+
+function splitPromptIntoParts(promptText: string): string[] {
+  const trimmed = promptText?.trim() ?? '';
+  if (!trimmed) return [];
+  const withQuestions = trimmed
+    .split(/(?<=\?)\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (withQuestions.length > 1) return withQuestions;
+  const sentences = trimmed
+    .split(/(?<=\.)\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (sentences.length > 1) return sentences;
+  return [trimmed];
+}
+
+function toConversationLines(messages: PrivatePromptChatMessage[]): string[] {
+  return messages.map((message) => `${message.role}: ${message.text}`);
+}
+
+function buildPrivatePromptBody(parts: string[], answersByPart: string[][]): string {
+  const sections: string[] = [];
+  parts.forEach((part, idx) => {
+    const answers = answersByPart[idx] ?? [];
+    const merged = answers
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .join(' ');
+    if (!merged) return;
+    sections.push(`Q${idx + 1}: ${part}`);
+    sections.push(`A${idx + 1}: ${merged}`);
+  });
+  return sections.join('\n');
+}
+
 export default function HomeScreen() {
   const { account, token } = useAuth();
   const [loading, setLoading] = useState(false);
   const [card, setCard] = useState<PublicPromptFeedCard | null>(null);
   const [activePrivatePrompt, setActivePrivatePrompt] = useState<ActivePrivatePrompt | null>(null);
   const [privatePromptInput, setPrivatePromptInput] = useState('');
+  const [privatePromptMessages, setPrivatePromptMessages] = useState<PrivatePromptChatMessage[]>([]);
+  const [privatePromptPartIndex, setPrivatePromptPartIndex] = useState(0);
+  const [privatePromptAnswersByPart, setPrivatePromptAnswersByPart] = useState<string[][]>([]);
+  const [privatePromptReadyToSubmit, setPrivatePromptReadyToSubmit] = useState(false);
   const [overlayOpen, setOverlayOpen] = useState(false);
   const [privatePromptSubmitting, setPrivatePromptSubmitting] = useState(false);
   const [debugPromptLoading, setDebugPromptLoading] = useState(false);
@@ -69,6 +117,48 @@ export default function HomeScreen() {
     { light: '#ffffff', dark: '#1a1d21' },
     'background'
   );
+  const bubbleAgentBg = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.04)', dark: 'rgba(255, 255, 255, 0.08)' },
+    'background'
+  );
+  const bubbleUserBg = useThemeColor(
+    { light: '#111', dark: '#f1f1f1' },
+    'text'
+  );
+  const bubbleUserText = useThemeColor(
+    { light: '#fff', dark: '#111' },
+    'text'
+  );
+
+  const privatePromptParts = useMemo(
+    () => splitPromptIntoParts(activePrivatePrompt?.prompt?.text ?? ''),
+    [activePrivatePrompt?.prompt?.text]
+  );
+  const hasDraftPrivateInput = privatePromptInput.trim().length > 0;
+  const shouldSubmitNow = privatePromptReadyToSubmit && !hasDraftPrivateInput;
+
+  useEffect(() => {
+    if (!activePrivatePrompt) {
+      setPrivatePromptMessages([]);
+      setPrivatePromptPartIndex(0);
+      setPrivatePromptAnswersByPart([]);
+      setPrivatePromptReadyToSubmit(false);
+      setPrivatePromptInput('');
+      return;
+    }
+    const greeting = account?.name
+      ? `Hey ${account.name}, have a question for you.`
+      : 'Hey, have a question for you.';
+    const firstPart = privatePromptParts[0] ?? activePrivatePrompt.prompt.text;
+    setPrivatePromptMessages([
+      { role: 'agent', text: greeting },
+      { role: 'agent', text: firstPart },
+    ]);
+    setPrivatePromptPartIndex(0);
+    setPrivatePromptAnswersByPart((privatePromptParts.length ? privatePromptParts : [firstPart]).map(() => []));
+    setPrivatePromptReadyToSubmit(false);
+    setPrivatePromptInput('');
+  }, [account?.name, activePrivatePrompt?.assignment?.instanceId, activePrivatePrompt?.prompt?.text, privatePromptParts]);
 
   const refreshSignals = useCallback(async () => {
     if (!account || !token) return;
@@ -130,12 +220,93 @@ export default function HomeScreen() {
     setOverlayOpen(false);
   }, []);
 
+  const sendPrivatePromptTurn = useCallback(async () => {
+    if (!account || !token || !activePrivatePrompt) return;
+    Keyboard.dismiss();
+    const userMessage = privatePromptInput.trim();
+    if (!userMessage) {
+      setMessage('Write a reply before sending.');
+      return;
+    }
+    const currentPart =
+      privatePromptParts[privatePromptPartIndex] ?? activePrivatePrompt.prompt.text;
+    const messagesWithUserTurn = [...privatePromptMessages, { role: 'user' as const, text: userMessage }];
+    const answersWithUserTurn = privatePromptAnswersByPart.map((partAnswers, idx) =>
+      idx === privatePromptPartIndex ? [...partAnswers, userMessage] : partAnswers
+    );
+    setPrivatePromptMessages(messagesWithUserTurn);
+    setPrivatePromptAnswersByPart(answersWithUserTurn);
+    setPrivatePromptInput('');
+    setPrivatePromptSubmitting(true);
+    try {
+      const turn = await postPrivatePromptChatTurn(
+        account.id,
+        token,
+        activePrivatePrompt.assignment.instanceId,
+        {
+          questionPart: currentPart,
+          userMessage,
+          conversation: toConversationLines(messagesWithUserTurn),
+        }
+      );
+      const nextMessages = [...messagesWithUserTurn];
+      if (turn.agentMessage?.trim()) {
+        nextMessages.push({ role: 'agent', text: turn.agentMessage.trim() });
+      }
+      if (turn.needsMoreDetail) {
+        setPrivatePromptReadyToSubmit(false);
+      } else {
+        if (privatePromptPartIndex < privatePromptParts.length - 1) {
+          const nextPartIndex = privatePromptPartIndex + 1;
+          setPrivatePromptPartIndex(nextPartIndex);
+          nextMessages.push({ role: 'agent', text: privatePromptParts[nextPartIndex] });
+        } else {
+          setPrivatePromptReadyToSubmit(true);
+          if (!privatePromptReadyToSubmit) {
+            nextMessages.push({
+              role: 'agent',
+              text: "Thanks, that's helpful. You can add more detail, or tap Submit when you're ready.",
+            });
+          }
+        }
+      }
+      setPrivatePromptMessages(nextMessages);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to continue private prompt chat');
+    } finally {
+      setPrivatePromptSubmitting(false);
+    }
+  }, [
+    account,
+    activePrivatePrompt,
+    privatePromptAnswersByPart,
+    privatePromptInput,
+    privatePromptMessages,
+    privatePromptPartIndex,
+    privatePromptParts,
+    privatePromptReadyToSubmit,
+    token,
+  ]);
+
   const submitPrivatePromptAnswer = useCallback(async () => {
     if (!account || !token || !activePrivatePrompt) return;
     Keyboard.dismiss();
-    const body = privatePromptInput.trim();
+    const partsForBody =
+      privatePromptParts.length > 0 ? privatePromptParts : [activePrivatePrompt.prompt.text];
+    const trailingInput = privatePromptInput.trim();
+    const answersForSubmit = privatePromptAnswersByPart.map((partAnswers) => [...partAnswers]);
+    const messagesForSubmit = [...privatePromptMessages];
+    if (trailingInput) {
+      const targetPart = Math.max(0, Math.min(privatePromptPartIndex, answersForSubmit.length - 1));
+      if (!answersForSubmit[targetPart]) {
+        answersForSubmit[targetPart] = [];
+      }
+      answersForSubmit[targetPart].push(trailingInput);
+      messagesForSubmit.push({ role: 'user', text: trailingInput });
+    }
+    const body = buildPrivatePromptBody(partsForBody, answersForSubmit).trim();
     if (!body) {
-      setMessage('Write an answer before submitting.');
+      setMessage('Add at least one answer before submitting.');
       return;
     }
     setPrivatePromptSubmitting(true);
@@ -144,18 +315,29 @@ export default function HomeScreen() {
         account.id,
         token,
         activePrivatePrompt.assignment.instanceId,
-        body
+        body,
+        toConversationLines(messagesForSubmit)
       );
       await refreshSignals();
       closeOverlay();
-      setPrivatePromptInput('');
       setActivePrivatePrompt(null);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to submit private prompt');
     } finally {
       setPrivatePromptSubmitting(false);
     }
-  }, [account, activePrivatePrompt, closeOverlay, privatePromptInput, refreshSignals, token]);
+  }, [
+    account,
+    activePrivatePrompt,
+    closeOverlay,
+    privatePromptAnswersByPart,
+    privatePromptInput,
+    privatePromptMessages,
+    privatePromptPartIndex,
+    privatePromptParts,
+    refreshSignals,
+    token,
+  ]);
 
   const skipPrivatePrompt = useCallback(async () => {
     if (!account || !token || !activePrivatePrompt) return;
@@ -209,8 +391,10 @@ export default function HomeScreen() {
               },
             ]}
           >
-            <ThemedText type="defaultSemiBold">Agent prompt ready</ThemedText>
-            <ThemedText style={[styles.mutedText, { color: muted }]}>Private and not shared</ThemedText>
+            <ThemedText type="defaultSemiBold">Private agent question ready</ThemedText>
+            <ThemedText style={[styles.mutedText, { color: muted }]}>
+              Private answers, matchmaking only
+            </ThemedText>
           </Pressable>
         </View>
       )}
@@ -331,15 +515,53 @@ export default function HomeScreen() {
                 <ThemedText style={[styles.mutedText, { color: muted }]}>Close</ThemedText>
               </Pressable>
             </View>
-            <ThemedText style={[styles.bodyText, { color: muted }]}>
-              {activePrivatePrompt?.prompt.text}
+
+            <ThemedText style={[styles.mutedText, { color: muted }]}>
+              {PRIVATE_PROMPT_PRIVACY_NOTE}
             </ThemedText>
+
+            <ThemedText style={[styles.mutedText, { color: muted }]}>
+              Part {Math.min(privatePromptPartIndex + 1, Math.max(privatePromptParts.length, 1))} of{' '}
+              {Math.max(privatePromptParts.length, 1)}
+            </ThemedText>
+
+            <ScrollView
+              style={[styles.chatTimeline, { borderColor: cardBorder }]}
+              contentContainerStyle={styles.chatTimelineContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              {privatePromptMessages.map((message, idx) => {
+                const isUser = message.role === 'user';
+                return (
+                  <View
+                    key={`${message.role}-${idx}-${message.text}`}
+                    style={[
+                      styles.chatBubble,
+                      isUser ? styles.chatBubbleUser : styles.chatBubbleAgent,
+                      {
+                        backgroundColor: isUser ? bubbleUserBg : bubbleAgentBg,
+                        borderColor: isUser ? bubbleUserBg : cardBorder,
+                      },
+                    ]}
+                  >
+                    <ThemedText
+                      style={[
+                        styles.chatBubbleText,
+                        { color: isUser ? bubbleUserText : textColor },
+                      ]}
+                    >
+                      {message.text}
+                    </ThemedText>
+                  </View>
+                );
+              })}
+            </ScrollView>
 
             <TextInput
               multiline
               value={privatePromptInput}
               onChangeText={setPrivatePromptInput}
-              placeholder="Write your answer..."
+              placeholder={privatePromptReadyToSubmit ? 'Anything else before submit?' : 'Write your reply...'}
               placeholderTextColor={muted}
               editable={!privatePromptSubmitting}
               style={[
@@ -362,7 +584,7 @@ export default function HomeScreen() {
 
               <Pressable
                 disabled={privatePromptSubmitting}
-                onPress={submitPrivatePromptAnswer}
+                onPress={shouldSubmitNow ? submitPrivatePromptAnswer : sendPrivatePromptTurn}
                 style={({ pressed }) => [
                   styles.actionButton,
                   {
@@ -372,7 +594,9 @@ export default function HomeScreen() {
                   },
                 ]}
               >
-                <ThemedText style={[styles.actionText, { color: primaryText }]}>Answer</ThemedText>
+                <ThemedText style={[styles.actionText, { color: primaryText }]}>
+                  {shouldSubmitNow ? 'Submit' : 'Send'}
+                </ThemedText>
               </Pressable>
             </View>
           </View>
@@ -470,8 +694,34 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  chatTimeline: {
+    maxHeight: 280,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  chatTimelineContent: {
+    padding: 10,
+    gap: 8,
+  },
+  chatBubble: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    maxWidth: '90%',
+  },
+  chatBubbleAgent: {
+    alignSelf: 'flex-start',
+  },
+  chatBubbleUser: {
+    alignSelf: 'flex-end',
+  },
+  chatBubbleText: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
   textInput: {
-    minHeight: 110,
+    minHeight: 90,
     borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 12,
