@@ -104,6 +104,13 @@ export default function ProfileScreen() {
               </ThemedText>
             </Pressable>
           </Link>
+          <Link href="/facecard-photos" asChild>
+            <Pressable style={[styles.secondaryButton, { borderColor: borderColor }]}>
+              <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>
+                Edit facecard photos
+              </ThemedText>
+            </Pressable>
+          </Link>
           <View style={styles.row}>
             <ThemedText type="defaultSemiBold">Name</ThemedText>
             <ThemedText>{account.name}</ThemedText>

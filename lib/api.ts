@@ -149,6 +149,23 @@ export type PrivatePromptChatTurnResponse = {
   needsMoreDetail: boolean;
 };
 
+export type MatchCard = {
+  account: Account;
+  score: number;
+  computedAt: number;
+};
+
+function isSerializedAccountId(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  return /^\d+-a$/.test(trimmed);
+}
+
+function isValidMatchCard(value: MatchCard | null | undefined): value is MatchCard {
+  if (!value || !value.account) return false;
+  return isSerializedAccountId(value.account.id);
+}
+
 export type SignalRecord = {
   token: string;
   source?: string;
@@ -629,6 +646,34 @@ export async function postPublicPromptReaction(
   return;
 }
 
+export async function postFacecardReaction(
+  accountId: string,
+  token: string,
+  targetAccountId: string,
+  payload: PublicPromptReactionPayload
+): Promise<void> {
+  const targetId = targetAccountId?.trim();
+  if (!isSerializedAccountId(targetId)) {
+    throw new Error('Target account required');
+  }
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/facecards/${targetId}/reaction`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  const json = (await res.json()) as Record<string, unknown> | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+}
+
 export async function fetchActivePrivatePrompt(
   accountId: string,
   token: string
@@ -647,6 +692,28 @@ export async function fetchActivePrivatePrompt(
   }
   if (!('assignment' in json) || !('prompt' in json)) {
     throw new Error('Unexpected response from /api/accounts/{id}/agent/private-prompt');
+  }
+  return json;
+}
+
+export async function fetchActiveMatchmakingFollowup(
+  accountId: string,
+  token: string
+): Promise<ActivePrivatePrompt | null> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/agent/matchmaking-followup`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (res.status === 204) return null;
+
+  const json = (await res.json()) as ActivePrivatePrompt | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('assignment' in json) || !('prompt' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/agent/matchmaking-followup');
   }
   return json;
 }
@@ -676,6 +743,37 @@ export async function postPrivatePromptAnswer(
   }
   if (!('assignment' in json) || !('prompt' in json)) {
     throw new Error('Unexpected response from /api/accounts/{id}/agent/private-prompt/{instanceId}/answer');
+  }
+  return json;
+}
+
+export async function postMatchmakingFollowupAnswer(
+  accountId: string,
+  token: string,
+  instanceId: string,
+  body: string,
+  conversation?: string[]
+): Promise<ActivePrivatePrompt> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/agent/matchmaking-followup/${instanceId}/answer`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ body, conversation }),
+    }
+  );
+
+  const json = (await res.json()) as ActivePrivatePrompt | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('assignment' in json) || !('prompt' in json)) {
+    throw new Error(
+      'Unexpected response from /api/accounts/{id}/agent/matchmaking-followup/{instanceId}/answer'
+    );
   }
   return json;
 }
@@ -710,6 +808,36 @@ export async function postPrivatePromptChatTurn(
   return json;
 }
 
+export async function postMatchmakingFollowupChatTurn(
+  accountId: string,
+  token: string,
+  instanceId: string,
+  payload: PrivatePromptChatTurnPayload
+): Promise<PrivatePromptChatTurnResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/agent/matchmaking-followup/${instanceId}/chat-turn`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  const json = (await res.json()) as PrivatePromptChatTurnResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('agentMessage' in json) || !('needsMoreDetail' in json)) {
+    throw new Error(
+      'Unexpected response from /api/accounts/{id}/agent/matchmaking-followup/{instanceId}/chat-turn'
+    );
+  }
+  return json;
+}
+
 export async function postPrivatePromptSkip(
   accountId: string,
   token: string,
@@ -717,6 +845,27 @@ export async function postPrivatePromptSkip(
 ): Promise<void> {
   const res = await fetch(
     `${API_BASE_URL}/api/accounts/${accountId}/agent/private-prompt/${instanceId}/skip`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  if (!res.ok) {
+    const json = (await res.json()) as ErrorDetails;
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+}
+
+export async function postMatchmakingFollowupSkip(
+  accountId: string,
+  token: string,
+  instanceId: string
+): Promise<void> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/agent/matchmaking-followup/${instanceId}/skip`,
     {
       method: 'POST',
       headers: {
@@ -780,6 +929,56 @@ export async function postDebugSummonNextPrivatePrompt(
     throw new Error('Unexpected response from /api/accounts/{id}/agent/private-prompt/debug/next');
   }
   return json;
+}
+
+type MatchesResponse = {
+  matches?: MatchCard[];
+};
+
+export async function fetchMatches(
+  accountId: string,
+  token: string,
+  limit = 20
+): Promise<MatchCard[]> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/matches?limit=${limit}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as MatchesResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (!('matches' in json) || !Array.isArray(json.matches)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/matches');
+  }
+
+  return json.matches.filter((match) => isValidMatchCard(match));
+}
+
+export async function fetchFacecards(
+  accountId: string,
+  token: string,
+  limit = 20
+): Promise<MatchCard[]> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/facecards?limit=${limit}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as MatchesResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+
+  if (!('matches' in json) || !Array.isArray(json.matches)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/facecards');
+  }
+
+  return json.matches.filter((match) => isValidMatchCard(match));
 }
 
 export async function fetchSignals(accountId: string, token: string): Promise<SignalsResponse> {

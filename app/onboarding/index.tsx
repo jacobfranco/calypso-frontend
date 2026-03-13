@@ -13,10 +13,10 @@ import {
 } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Location from 'expo-location';
-import * as Notifications from 'expo-notifications';
 import MultiSlider from '@ptomasroos/react-native-multi-slider';
 
 import { AgeRangeSlider } from '@/components/age-range-slider';
+import { FacecardPhotoGrid } from '@/components/facecard-photo-grid';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
@@ -36,6 +36,14 @@ import {
 } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { formatTagGroupLabel, formatTagLabel } from '@/lib/tag-labels';
+import {
+  FACECARD_MAX_PHOTOS,
+  removeFacecardPhotoUriAtIndex,
+  reorderFacecardPhotoUris,
+  saveFacecardPhotoUris,
+  upsertFacecardPhotoUriAtIndex,
+} from '@/lib/facecard-photos';
+import { pickPhotoFromLibrary } from '@/lib/image-picker';
 
 const STEPS = [
   'welcome',
@@ -50,6 +58,7 @@ const STEPS = [
   'lifestyle',
   'location',
   'prompts',
+  'photos',
 ] as const;
 
 type StepKey = (typeof STEPS)[number];
@@ -69,15 +78,7 @@ const COUNTRY_RADIUS_KM = 3000;
 const WORLDWIDE_RADIUS_KM = 30000;
 const PROMPT_MIN_SELECTION = 1;
 const PROMPT_MAX_SELECTION = 5;
-
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: false,
-    shouldSetBadge: false,
-  }),
-});
+const FACECARD_MIN_PHOTOS = 1;
 
 type LocationPermission = Location.PermissionStatus | 'unknown';
 
@@ -126,6 +127,8 @@ export default function OnboardingScreen() {
   const [promptError, setPromptError] = useState<string | null>(null);
   const [promptEditorPromptId, setPromptEditorPromptId] = useState<string | null>(null);
   const [promptEditorAnswer, setPromptEditorAnswer] = useState('');
+  const [facecardPhotoUris, setFacecardPhotoUris] = useState<string[]>([]);
+  const [photoPicking, setPhotoPicking] = useState(false);
 
   const handleNameChange = (text: string) => {
     setName(text);
@@ -299,11 +302,16 @@ export default function OnboardingScreen() {
         && answeredCount === selectedCount
       );
     }
+    if (step === 'photos') {
+      if (photoPicking) return false;
+      return facecardPhotoUris.length >= FACECARD_MIN_PHOTOS;
+    }
     return false;
   }, [
     age,
     code,
     countryCode,
+    facecardPhotoUris.length,
     gender,
     locationScope,
     lat,
@@ -316,6 +324,7 @@ export default function OnboardingScreen() {
     promptEditorPromptId,
     promptLoading,
     promptSelection.length,
+    photoPicking,
     radiusValue,
     religion,
     relationshipMode,
@@ -385,6 +394,31 @@ export default function OnboardingScreen() {
     }
   };
 
+  const pickFacecardPhotoAt = useCallback(async (index: number) => {
+    setMessage(null);
+    setPhotoPicking(true);
+    try {
+      const uri = await pickPhotoFromLibrary();
+      if (!uri) return;
+      setFacecardPhotoUris((prev) => upsertFacecardPhotoUriAtIndex(prev, uri, index));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to pick photo');
+    } finally {
+      setPhotoPicking(false);
+    }
+  }, []);
+
+  const removeFacecardPhotoAt = useCallback((index: number) => {
+    setFacecardPhotoUris((prev) => {
+      if (prev.length <= FACECARD_MIN_PHOTOS) return prev;
+      return removeFacecardPhotoUriAtIndex(prev, index);
+    });
+  }, []);
+
+  const reorderFacecardPhotos = useCallback((fromIndex: number, toIndex: number) => {
+    setFacecardPhotoUris((prev) => reorderFacecardPhotoUris(prev, fromIndex, toIndex));
+  }, []);
+
   const handleBack = () => {
     if (step === 'prompts' && promptEditorPromptId) {
       closePromptEditor();
@@ -403,21 +437,6 @@ export default function OnboardingScreen() {
         const result = await requestPhoneCode(phone.trim());
         if (result.fallback && result.code) {
           setFallbackCode(result.code);
-          const permissions = await Notifications.getPermissionsAsync();
-          if (permissions.status !== 'granted') {
-            const request = await Notifications.requestPermissionsAsync();
-            if (request.status !== 'granted') {
-              setStepIndex((prev) => prev + 1);
-              return;
-            }
-          }
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: 'Mock SMS',
-              body: `Your verification code is ${result.code}`,
-            },
-            trigger: null,
-          });
         } else {
           setFallbackCode('');
         }
@@ -476,7 +495,7 @@ export default function OnboardingScreen() {
 
     if (step === 'prompts') {
       if (promptEditorPromptId) {
-        setMessage('Save this prompt answer before finishing.');
+        setMessage('Save this prompt answer before continuing.');
         return;
       }
       const selectedCount = promptSelection.length;
@@ -496,6 +515,11 @@ export default function OnboardingScreen() {
         setMessage('Please answer each selected prompt.');
         return;
       }
+      setStepIndex((prev) => prev + 1);
+      return;
+    }
+
+    if (step === 'photos') {
       if (!verificationToken) {
         setMessage('Please verify your phone number.');
         return;
@@ -516,6 +540,10 @@ export default function OnboardingScreen() {
         setMessage('We could not determine your country. Please try again.');
         return;
       }
+      if (facecardPhotoUris.length < FACECARD_MIN_PHOTOS) {
+        setMessage('Please upload at least one facecard photo.');
+        return;
+      }
       setLoading(true);
       try {
         const { account, token } = await completePhoneSignup({
@@ -524,6 +552,7 @@ export default function OnboardingScreen() {
           birthday: birthday.toISOString().split('T')[0],
           verification_token: verificationToken,
         });
+        await saveFacecardPhotoUris(account.id, facecardPhotoUris);
 
         const [minAge, maxAge] = ageRange;
         const radiusKm =
@@ -669,6 +698,7 @@ export default function OnboardingScreen() {
     if (step === 'location') return 'Where are you';
     if (step === 'prompts' && promptEditorPromptId) return 'Answer prompt';
     if (step === 'prompts') return 'Pick prompts';
+    if (step === 'photos') return 'Add facecard photos';
     return 'Onboarding';
   }, [promptEditorPromptId, step]);
 
@@ -725,6 +755,13 @@ export default function OnboardingScreen() {
               ? "We'll log you in after you confirm this code."
               : `Sent to ${phone || 'your phone'}.`}
           </ThemedText>
+          {fallbackCode ? (
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <ThemedText style={[styles.helperText, { color: muted }]}>
+                Dev code: {fallbackCode}
+              </ThemedText>
+            </View>
+          ) : null}
         </View>
       );
     }
@@ -1236,6 +1273,37 @@ export default function OnboardingScreen() {
       );
     }
 
+    if (step === 'photos') {
+      return (
+        <View style={styles.section}>
+          <ThemedText style={[styles.label, { color: muted }]}>Facecard photos</ThemedText>
+          <ThemedText style={[styles.helperText, { color: muted }]}>
+            Add at least one photo. The first photo in this grid is shown first on your facecard.
+          </ThemedText>
+          <FacecardPhotoGrid
+            photoUris={facecardPhotoUris}
+            maxPhotos={FACECARD_MAX_PHOTOS}
+            disabled={photoPicking}
+            cardBorderColor={cardBorder}
+            cardBackgroundColor={cardBg}
+            mutedTextColor={muted}
+            onPickPhotoAt={pickFacecardPhotoAt}
+            onRemovePhotoAt={removeFacecardPhotoAt}
+            onReorderPhotos={reorderFacecardPhotos}
+          />
+          {photoPicking && (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator />
+              <ThemedText style={[styles.mutedText, { color: muted }]}>Opening photos…</ThemedText>
+            </View>
+          )}
+          <ThemedText style={[styles.helperText, { color: muted }]}>
+            {facecardPhotoUris.length}/{FACECARD_MAX_PHOTOS} photos selected
+          </ThemedText>
+        </View>
+      );
+    }
+
     return null;
   };
 
@@ -1289,7 +1357,7 @@ export default function OnboardingScreen() {
                 disabled={!canContinue}
               >
                 <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}>
-                  {step === 'prompts' ? 'Finish' : 'Continue'}
+                  {step === 'photos' ? 'Finish' : 'Continue'}
                 </ThemedText>
               </Pressable>
             </View>
