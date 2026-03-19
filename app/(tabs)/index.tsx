@@ -138,6 +138,8 @@ function buildPrivatePromptBody(parts: string[], answersByPart: string[][]): str
 export default function HomeScreen() {
   const { account, token } = useAuth();
   const facecardsScrollRef = useRef<ScrollView>(null);
+  const feedWarmupRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const feedWarmupRetryCountRef = useRef(0);
   const [loading, setLoading] = useState(false);
   const [card, setCard] = useState<PublicPromptFeedCard | null>(null);
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
@@ -272,6 +274,21 @@ export default function HomeScreen() {
     [account?.id]
   );
 
+  const clearFeedWarmupRetry = useCallback(() => {
+    if (feedWarmupRetryTimeoutRef.current) {
+      clearTimeout(feedWarmupRetryTimeoutRef.current);
+      feedWarmupRetryTimeoutRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    feedWarmupRetryCountRef.current = 0;
+    clearFeedWarmupRetry();
+    return () => {
+      clearFeedWarmupRetry();
+    };
+  }, [account?.id, clearFeedWarmupRetry]);
+
   const hydrateFacecardPhotos = useCallback(async (deck: MatchCard[]) => {
     const accountIds = Array.from(
       new Set(deck.map((match) => match.account?.id?.trim()).filter(Boolean))
@@ -314,22 +331,27 @@ export default function HomeScreen() {
     setLoading(true);
     setMessage(null);
     try {
-      const [cards, privatePrompt, matchmakingFollowup, signals, rankedFacecards] = await Promise.all([
+      const [cards, privatePrompt, matchmakingFollowup, signals] = await Promise.all([
         fetchPublicPromptFeed(account.id, token, 1),
         fetchActivePrivatePrompt(account.id, token),
         fetchActiveMatchmakingFollowup(account.id, token),
         fetchSignals(account.id, token),
-        fetchFacecards(account.id, token, 20),
       ]);
       const nextPrompt = pickActiveAgentPrompt(privatePrompt, matchmakingFollowup);
-      const sanitizedFacecards = sanitizeFacecardDeck(rankedFacecards);
       setCard(cards.length ? cards[0] : null);
-      setFacecards(sanitizedFacecards);
-      void hydrateFacecardPhotos(sanitizedFacecards);
       setActivePrivatePrompt(nextPrompt?.prompt ?? null);
       setActivePromptChannel(nextPrompt?.channel ?? null);
       setSignalRecords(signals.records ?? []);
-      if (!cards.length && !sanitizedFacecards.length) {
+      if (cards.length) {
+        feedWarmupRetryCountRef.current = 0;
+        clearFeedWarmupRetry();
+      } else if (feedWarmupRetryCountRef.current < 3) {
+        feedWarmupRetryCountRef.current += 1;
+        clearFeedWarmupRetry();
+        feedWarmupRetryTimeoutRef.current = setTimeout(() => {
+          void loadCard();
+        }, 900);
+      } else {
         setMessage('Nothing new right now. Check back later.');
       }
     } catch (error) {
@@ -337,7 +359,7 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
-  }, [account, hydrateFacecardPhotos, sanitizeFacecardDeck, token]);
+  }, [account, clearFeedWarmupRetry, token]);
 
   useEffect(() => {
     loadCard();
