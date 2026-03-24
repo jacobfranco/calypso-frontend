@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -14,7 +14,7 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 
 export default function ProfileScreen() {
   const { account, status, error, logout } = useAuth();
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const activeError = error;
 
   const borderColor = useThemeColor(
     { light: 'rgba(0, 0, 0, 0.12)', dark: 'rgba(255, 255, 255, 0.18)' },
@@ -53,9 +53,6 @@ export default function ProfileScreen() {
             </Pressable>
           ) : null}
         </View>
-        <ThemedText type="subtitle">
-          {account ? 'Loaded from your Calypso account.' : 'Log in to continue.'}
-        </ThemedText>
       </View>
 
       {status === 'loading' && (
@@ -65,16 +62,16 @@ export default function ProfileScreen() {
         </View>
       )}
 
-      {(status === 'error' || errorMessage || error) && (
+      {activeError && (
         <View style={styles.stateBlock}>
           <ThemedText type="defaultSemiBold">Couldn&apos;t continue</ThemedText>
-          <ThemedText style={[styles.muted, { color: muted }]}>{errorMessage ?? error}</ThemedText>
+          <ThemedText style={[styles.muted, { color: muted }]}>{activeError}</ThemedText>
         </View>
       )}
 
       {!account && status !== 'loading' && (
         <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-          <ThemedText type="defaultSemiBold">Welcome to Calypso</ThemedText>
+          <ThemedText type="defaultSemiBold">Welcome</ThemedText>
           <ThemedText style={[styles.muted, { color: muted }]}>
             Complete onboarding to continue.
           </ThemedText>
@@ -108,6 +105,13 @@ export default function ProfileScreen() {
             <Pressable style={[styles.secondaryButton, { borderColor: borderColor }]}>
               <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>
                 Edit facecard photos
+              </ThemedText>
+            </Pressable>
+          </Link>
+          <Link href="/admin" asChild>
+            <Pressable style={[styles.secondaryButton, { borderColor: borderColor }]}>
+              <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>
+                Admin
               </ThemedText>
             </Pressable>
           </Link>

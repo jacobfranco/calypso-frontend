@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -24,10 +25,8 @@ import {
   fetchFacecards,
   fetchActiveMatchmakingFollowup,
   fetchActivePrivatePrompt,
-  fetchSignals,
   fetchPublicPromptFeed,
   MatchCard,
-  postDebugSummonNextPrivatePrompt,
   postFacecardReaction,
   postMatchmakingFollowupAnswer,
   postMatchmakingFollowupChatTurn,
@@ -37,7 +36,6 @@ import {
   postPrivatePromptSkip,
   postPublicPromptReaction,
   PublicPromptFeedCard,
-  SignalRecord,
 } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
@@ -78,6 +76,18 @@ function resolveFacecardPhotoUris(
     return uniqueNonEmptyStrings(stored);
   }
   return uniqueNonEmptyStrings([match.account.avatar_static, match.account.avatar]);
+}
+
+function mergeFacecardQueues(existing: MatchCard[], incoming: MatchCard[]): MatchCard[] {
+  const seen = new Set<string>();
+  const merged: MatchCard[] = [];
+  [...existing, ...incoming].forEach((match) => {
+    const accountId = match.account?.id?.trim();
+    if (!accountId || seen.has(accountId)) return;
+    seen.add(accountId);
+    merged.push(match);
+  });
+  return merged;
 }
 
 function pickActiveAgentPrompt(
@@ -143,7 +153,6 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(false);
   const [card, setCard] = useState<PublicPromptFeedCard | null>(null);
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
-  const [facecardsLoading, setFacecardsLoading] = useState(false);
   const [facecardsOverlayOpen, setFacecardsOverlayOpen] = useState(false);
   const [facecardReacting, setFacecardReacting] = useState(false);
   const [facecardDeck, setFacecardDeck] = useState<MatchCard[]>([]);
@@ -162,9 +171,6 @@ export default function HomeScreen() {
   const [privatePromptReadyToSubmit, setPrivatePromptReadyToSubmit] = useState(false);
   const [overlayOpen, setOverlayOpen] = useState(false);
   const [privatePromptSubmitting, setPrivatePromptSubmitting] = useState(false);
-  const [debugPromptLoading, setDebugPromptLoading] = useState(false);
-  const [signalRecords, setSignalRecords] = useState<SignalRecord[]>([]);
-  const [signalsLoading, setSignalsLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
   const cardBorder = useThemeColor(
@@ -213,12 +219,9 @@ export default function HomeScreen() {
   );
   const hasDraftPrivateInput = privatePromptInput.trim().length > 0;
   const shouldSubmitNow = privatePromptReadyToSubmit && !hasDraftPrivateInput;
+  const hasFacecards = facecards.length > 0;
   const promptOverlayTitle =
     activePromptChannel === 'matchmaking' ? 'Matchmaking follow-up' : 'Private prompt';
-  const promptBannerTitle =
-    activePromptChannel === 'matchmaking'
-      ? 'Matchmaking follow-up ready'
-      : 'Private agent question ready';
   const promptBannerNote =
     activePromptChannel === 'matchmaking'
       ? 'Private follow-up to refine a high-potential match'
@@ -246,19 +249,6 @@ export default function HomeScreen() {
     setPrivatePromptReadyToSubmit(false);
     setPrivatePromptInput('');
   }, [account?.name, activePrivatePrompt?.assignment?.instanceId, activePrivatePrompt?.prompt?.text, privatePromptParts]);
-
-  const refreshSignals = useCallback(async () => {
-    if (!account || !token) return;
-    setSignalsLoading(true);
-    try {
-      const signals = await fetchSignals(account.id, token);
-      setSignalRecords(signals.records ?? []);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to load signals');
-    } finally {
-      setSignalsLoading(false);
-    }
-  }, [account, token]);
 
   const sanitizeFacecardDeck = useCallback(
     (cards: MatchCard[]): MatchCard[] => {
@@ -331,17 +321,21 @@ export default function HomeScreen() {
     setLoading(true);
     setMessage(null);
     try {
-      const [cards, privatePrompt, matchmakingFollowup, signals] = await Promise.all([
+      const [cards, privatePrompt, matchmakingFollowup, nextFacecards] = await Promise.all([
         fetchPublicPromptFeed(account.id, token, 1),
         fetchActivePrivatePrompt(account.id, token),
         fetchActiveMatchmakingFollowup(account.id, token),
-        fetchSignals(account.id, token),
+        fetchFacecards(account.id, token, 20),
       ]);
       const nextPrompt = pickActiveAgentPrompt(privatePrompt, matchmakingFollowup);
       setCard(cards.length ? cards[0] : null);
       setActivePrivatePrompt(nextPrompt?.prompt ?? null);
       setActivePromptChannel(nextPrompt?.channel ?? null);
-      setSignalRecords(signals.records ?? []);
+      const sanitizedIncomingFacecards = sanitizeFacecardDeck(nextFacecards);
+      setFacecards((prev) => {
+        if (sanitizedIncomingFacecards.length === 0) return prev;
+        return mergeFacecardQueues(prev, sanitizedIncomingFacecards);
+      });
       if (cards.length) {
         feedWarmupRetryCountRef.current = 0;
         clearFeedWarmupRetry();
@@ -359,7 +353,7 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
-  }, [account, clearFeedWarmupRetry, token]);
+  }, [account, clearFeedWarmupRetry, sanitizeFacecardDeck, token]);
 
   useEffect(() => {
     loadCard();
@@ -401,25 +395,13 @@ export default function HomeScreen() {
     resetFacecardsOverlay();
   }, [account?.id, resetFacecardsOverlay]);
 
-  const openFacecardsOverlay = useCallback(async () => {
+  const openFacecardsOverlay = useCallback(() => {
     if (!account || !token) return;
-    setMessage(null);
-    let deck = sanitizeFacecardDeck(facecards);
+    const deck = sanitizeFacecardDeck(facecards);
     if (!deck.length) {
-      setFacecardsLoading(true);
-      try {
-        deck = sanitizeFacecardDeck(await fetchFacecards(account.id, token, 20));
-        setFacecards(deck);
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : 'Failed to load facecards');
-      } finally {
-        setFacecardsLoading(false);
-      }
-    }
-    if (!deck.length) {
-      setMessage('No facecards ready right now.');
       return;
     }
+    setMessage(null);
     Keyboard.dismiss();
     void hydrateFacecardPhotos(deck);
     setFacecardDeck(deck);
@@ -632,7 +614,6 @@ export default function HomeScreen() {
           conversation
         );
       }
-      await refreshSignals();
       closeOverlay();
       setActivePrivatePrompt(null);
       setActivePromptChannel(null);
@@ -657,7 +638,6 @@ export default function HomeScreen() {
     privatePromptMessages,
     privatePromptPartIndex,
     privatePromptParts,
-    refreshSignals,
     token,
   ]);
 
@@ -671,7 +651,6 @@ export default function HomeScreen() {
       } else {
         await postPrivatePromptSkip(account.id, token, activePrivatePrompt.assignment.instanceId);
       }
-      await refreshSignals();
       closeOverlay();
       setPrivatePromptInput('');
       setActivePrivatePrompt(null);
@@ -687,94 +666,50 @@ export default function HomeScreen() {
     } finally {
       setPrivatePromptSubmitting(false);
     }
-  }, [account, activePrivatePrompt, activePromptChannel, closeOverlay, refreshSignals, token]);
-
-  const summonDebugPrivatePrompt = useCallback(async () => {
-    if (!account || !token) return;
-    setDebugPromptLoading(true);
-    setMessage(null);
-    try {
-      Keyboard.dismiss();
-      const nextPrompt = await postDebugSummonNextPrivatePrompt(account.id, token);
-      setOverlayOpen(false);
-      setPrivatePromptInput('');
-      setActivePrivatePrompt(nextPrompt);
-      setActivePromptChannel(nextPrompt ? 'private' : null);
-      if (nextPrompt == null) {
-        setMessage('No additional private prompt available right now.');
-      }
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to summon private prompt');
-    } finally {
-      setDebugPromptLoading(false);
-    }
-  }, [account, token]);
+  }, [account, activePrivatePrompt, activePromptChannel, closeOverlay, token]);
 
   return (
     <ThemedView style={styles.container}>
-      {activePrivatePrompt && (
-        <View style={styles.agentRow}>
+      <View style={styles.quickActionsRow}>
+        {activePrivatePrompt ? (
           <Pressable
             onPress={() => setOverlayOpen(true)}
+            disabled={privatePromptSubmitting}
             style={({ pressed }) => [
-              styles.agentButton,
+              styles.quickActionButton,
               {
                 borderColor: cardBorder,
                 backgroundColor: cardBg,
-                opacity: pressed ? 0.85 : 1,
+                opacity: pressed || privatePromptSubmitting ? 0.7 : 1,
               },
             ]}
           >
-            <ThemedText type="defaultSemiBold">{promptBannerTitle}</ThemedText>
-            <ThemedText style={[styles.mutedText, { color: muted }]}>
-              {promptBannerNote}
+            <Ionicons name="chatbox" size={18} color={muted} />
+            <ThemedText style={[styles.quickActionText, { color: muted }]}>
+              {activePromptChannel === 'matchmaking' ? 'Follow-up' : 'Private agent'}
             </ThemedText>
           </Pressable>
-        </View>
-      )}
+        ) : null}
 
-      <View style={styles.agentRow}>
-        <Pressable
-          onPress={openFacecardsOverlay}
-          disabled={facecardsLoading || privatePromptSubmitting}
-          style={({ pressed }) => [
-            styles.agentButton,
-            {
-              borderColor: cardBorder,
-              backgroundColor: cardBg,
-              opacity: pressed || facecardsLoading || privatePromptSubmitting ? 0.7 : 1,
-            },
-          ]}
-        >
-          <ThemedText type="defaultSemiBold">Facecards ready</ThemedText>
-          <ThemedText style={[styles.mutedText, { color: muted }]}>
-            {facecardsLoading
-              ? 'Loading ranked facecards…'
-              : facecards.length > 0
-                ? `${facecards.length} in your queue`
-                : 'Tap to check for today’s facecards'}
-          </ThemedText>
-        </Pressable>
-      </View>
-
-      <View style={styles.agentRow}>
-        <Pressable
-          onPress={summonDebugPrivatePrompt}
-          disabled={debugPromptLoading || privatePromptSubmitting}
-          style={({ pressed }) => [
-            styles.agentButton,
-            {
-              borderColor: cardBorder,
-              backgroundColor: cardBg,
-              opacity: pressed || debugPromptLoading || privatePromptSubmitting ? 0.7 : 1,
-            },
-          ]}
-        >
-          <ThemedText type="defaultSemiBold">Temp: Summon another private prompt</ThemedText>
-          <ThemedText style={[styles.mutedText, { color: muted }]}>
-            Testing only
-          </ThemedText>
-        </Pressable>
+        {hasFacecards ? (
+          <Pressable
+            onPress={openFacecardsOverlay}
+            disabled={privatePromptSubmitting}
+            style={({ pressed }) => [
+              styles.quickActionButton,
+              {
+                borderColor: cardBorder,
+                backgroundColor: cardBg,
+                opacity: pressed || privatePromptSubmitting ? 0.7 : 1,
+              },
+            ]}
+          >
+            <MaterialCommunityIcons name="star-face" size={18} color={muted} />
+            <ThemedText style={[styles.quickActionText, { color: muted }]}>
+              Facecards {facecards.length}
+            </ThemedText>
+          </Pressable>
+        ) : null}
       </View>
 
       {loading && (
@@ -790,70 +725,44 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {card && (
-        <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-          <ThemedText type="defaultSemiBold">{card.promptText}</ThemedText>
-          <ThemedText style={[styles.bodyText, { color: muted }]}>{card.body}</ThemedText>
-          <View style={styles.actionsRow}>
-            {[
-              { label: 'Dislike', value: 'DISLIKE' as const },
-              { label: 'Skip', value: 'SKIP' as const },
-              { label: 'Like', value: 'LIKE' as const },
-            ].map((action) => (
-              <Pressable
-                key={action.value}
-                onPress={() => handleReaction(action.value)}
-                disabled={loading}
-                style={({ pressed }) => [
-                  styles.actionButton,
-                  {
-                    borderColor: cardBorder,
-                    backgroundColor: action.value === 'LIKE' ? primaryBg : 'transparent',
-                    opacity: pressed || loading ? 0.7 : 1,
-                  },
-                ]}
-              >
-                <ThemedText
-                  style={[
-                    styles.actionText,
-                    { color: action.value === 'LIKE' ? primaryText : muted },
+      {card ? (
+        <View pointerEvents="box-none" style={styles.feedCenterLayer}>
+          <View style={[styles.card, styles.feedCard, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+            <ThemedText type="defaultSemiBold">{card.promptText}</ThemedText>
+            <ThemedText style={[styles.bodyText, { color: muted }]}>{card.body}</ThemedText>
+            <View style={styles.actionsRow}>
+              {[
+                { label: 'Dislike', value: 'DISLIKE' as const },
+                { label: 'Skip', value: 'SKIP' as const },
+                { label: 'Like', value: 'LIKE' as const },
+              ].map((action) => (
+                <Pressable
+                  key={action.value}
+                  onPress={() => handleReaction(action.value)}
+                  disabled={loading}
+                  style={({ pressed }) => [
+                    styles.actionButton,
+                    {
+                      borderColor: cardBorder,
+                      backgroundColor: action.value === 'LIKE' ? primaryBg : 'transparent',
+                      opacity: pressed || loading ? 0.7 : 1,
+                    },
                   ]}
                 >
-                  {action.label}
-                </ThemedText>
-              </Pressable>
-            ))}
+                  <ThemedText
+                    style={[
+                      styles.actionText,
+                      { color: action.value === 'LIKE' ? primaryText : muted },
+                    ]}
+                  >
+                    {action.label}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </View>
           </View>
         </View>
-      )}
-
-      <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-        <View style={styles.debugHeaderRow}>
-          <ThemedText type="defaultSemiBold">Temp: Extracted signals</ThemedText>
-          <Pressable onPress={refreshSignals} disabled={signalsLoading}>
-            <ThemedText style={[styles.mutedText, { color: muted }]}>
-              {signalsLoading ? 'Refreshing…' : 'Refresh'}
-            </ThemedText>
-          </Pressable>
-        </View>
-        {signalRecords.length === 0 ? (
-          <ThemedText style={[styles.mutedText, { color: muted }]}>No signals yet.</ThemedText>
-        ) : (
-          <ScrollView style={styles.signalsList} nestedScrollEnabled>
-            {signalRecords
-              .slice()
-              .sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0))
-              .map((record, idx) => (
-                <ThemedText
-                  key={`${record.token}-${record.intent ?? 'none'}-${record.sourceId ?? 'none'}-${idx}`}
-                  style={[styles.signalItemText, { color: muted }]}
-                >
-                  {`${record.token} • ${record.source ?? 'unknown'} • x${record.count ?? 1}`}
-                </ThemedText>
-              ))}
-          </ScrollView>
-        )}
-      </View>
+      ) : null}
 
       <Modal
         transparent={false}
@@ -1109,33 +1018,58 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 20,
     paddingTop: 56,
-    gap: 20,
+    position: 'relative',
   },
-  agentRow: {
-    alignItems: 'flex-start',
+  quickActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 42,
+    zIndex: 2,
   },
-  agentButton: {
+  quickActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    gap: 2,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  quickActionText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   stateRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    marginTop: 14,
+    zIndex: 2,
   },
   notice: {
     padding: 12,
     borderRadius: 12,
     borderWidth: 1,
+    marginTop: 10,
+    zIndex: 2,
+  },
+  feedCenterLayer: {
+    ...StyleSheet.absoluteFillObject,
+    paddingTop: 56,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    justifyContent: 'center',
   },
   card: {
     padding: 18,
     borderRadius: 18,
     borderWidth: 1,
     gap: 12,
+  },
+  feedCard: {
+    width: '100%',
+    alignSelf: 'center',
   },
   bodyText: {
     fontSize: 16,
@@ -1145,19 +1079,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginTop: 8,
-  },
-  debugHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  signalsList: {
-    maxHeight: 180,
-  },
-  signalItemText: {
-    fontSize: 12,
-    lineHeight: 18,
-    marginBottom: 4,
   },
   actionButton: {
     flex: 1,

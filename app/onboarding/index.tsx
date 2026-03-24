@@ -685,7 +685,7 @@ export default function OnboardingScreen() {
   }, [lat, loading, locationName, lon, locationPermission, step]);
 
   const stepTitle = useMemo(() => {
-    if (step === 'welcome') return 'Welcome to Calypso';
+    if (step === 'welcome') return 'Welcome';
     if (step === 'phone') return 'Your phone number';
     if (step === 'verify') return 'Verify your number';
     if (step === 'name') return 'Name';
