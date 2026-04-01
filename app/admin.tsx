@@ -12,18 +12,35 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
+  fetchFacecards,
   fetchSignals,
+  MatchCard,
   postDebugSummonNextPrivatePrompt,
   SignalRecord,
 } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
+
+function clampSigned(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < -1) return -1;
+  if (value > 1) return 1;
+  return value;
+}
+
+function fmtSigned(value: number): string {
+  const clamped = clampSigned(value);
+  const abs = Math.abs(clamped).toFixed(2);
+  return clamped >= 0 ? `+${abs}` : `-${abs}`;
+}
 
 export default function AdminScreen() {
   const router = useRouter();
   const { account, token } = useAuth();
   const [debugPromptLoading, setDebugPromptLoading] = useState(false);
   const [signalsLoading, setSignalsLoading] = useState(false);
+  const [facecardsLoading, setFacecardsLoading] = useState(false);
   const [signalRecords, setSignalRecords] = useState<SignalRecord[]>([]);
+  const [facecards, setFacecards] = useState<MatchCard[]>([]);
   const [message, setMessage] = useState<string | null>(null);
 
   const borderColor = useThemeColor(
@@ -47,6 +64,10 @@ export default function AdminScreen() {
     () => signalRecords.slice().sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0)),
     [signalRecords]
   );
+  const sortedFacecards = useMemo(
+    () => facecards.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
+    [facecards]
+  );
 
   const refreshSignals = useCallback(async () => {
     if (!account || !token) return;
@@ -61,13 +82,28 @@ export default function AdminScreen() {
     }
   }, [account, token]);
 
+  const refreshFacecards = useCallback(async () => {
+    if (!account || !token) return;
+    setFacecardsLoading(true);
+    try {
+      const next = await fetchFacecards(account.id, token, 8);
+      setFacecards(next ?? []);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to load facecards');
+    } finally {
+      setFacecardsLoading(false);
+    }
+  }, [account, token]);
+
   useEffect(() => {
     if (!account || !token) {
       setSignalRecords([]);
+      setFacecards([]);
       return;
     }
     void refreshSignals();
-  }, [account, refreshSignals, token]);
+    void refreshFacecards();
+  }, [account, refreshFacecards, refreshSignals, token]);
 
   const summonDebugPrivatePrompt = useCallback(async () => {
     if (!account || !token) return;
@@ -118,13 +154,13 @@ export default function AdminScreen() {
           <>
             <Pressable
               onPress={summonDebugPrivatePrompt}
-              disabled={debugPromptLoading || signalsLoading}
+              disabled={debugPromptLoading || signalsLoading || facecardsLoading}
               style={({ pressed }) => [
                 styles.card,
                 {
                   borderColor: cardBorder,
                   backgroundColor: cardBg,
-                  opacity: pressed || debugPromptLoading || signalsLoading ? 0.7 : 1,
+                  opacity: pressed || debugPromptLoading || signalsLoading || facecardsLoading ? 0.7 : 1,
                 },
               ]}
             >
@@ -139,7 +175,7 @@ export default function AdminScreen() {
                 <ThemedText type="defaultSemiBold">Temp: Extracted signals</ThemedText>
                 <Pressable
                   onPress={refreshSignals}
-                  disabled={signalsLoading || debugPromptLoading}
+                  disabled={signalsLoading || debugPromptLoading || facecardsLoading}
                 >
                   <ThemedText style={[styles.mutedText, { color: muted }]}>
                     {signalsLoading ? 'Refreshing...' : 'Refresh'}
@@ -156,13 +192,128 @@ export default function AdminScreen() {
                 <ThemedText style={[styles.mutedText, { color: muted }]}>No signals yet.</ThemedText>
               ) : (
                 sortedSignals.map((record, idx) => (
-                  <ThemedText
+                  <View
                     key={`${record.token}-${record.intent ?? 'none'}-${record.sourceId ?? 'none'}-${idx}`}
-                    style={[styles.signalItemText, { color: muted }]}
+                    style={styles.signalItem}
                   >
-                    {`${record.token} | ${record.source ?? 'unknown'} | x${record.count ?? 1}`}
-                  </ThemedText>
+                    <ThemedText style={styles.signalItemToken}>
+                      {record.token}
+                    </ThemedText>
+                    <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                      {`intent=${(record.intent ?? 'self').toLowerCase()} valence=${fmtSigned(record.valence ?? 1)}`}
+                    </ThemedText>
+                    <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                      {`${record.source ?? 'unknown'} | x${record.count ?? 1}`}
+                    </ThemedText>
+                  </View>
                 ))
+              )}
+            </View>
+
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <View style={styles.cardHeader}>
+                <ThemedText type="defaultSemiBold">Temp: Facecard score debug</ThemedText>
+                <Pressable
+                  onPress={refreshFacecards}
+                  disabled={facecardsLoading || signalsLoading || debugPromptLoading}
+                >
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {facecardsLoading ? 'Refreshing...' : 'Refresh'}
+                  </ThemedText>
+                </Pressable>
+              </View>
+
+              {facecardsLoading ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator />
+                  <ThemedText>Loading facecards...</ThemedText>
+                </View>
+              ) : sortedFacecards.length === 0 ? (
+                <ThemedText style={[styles.mutedText, { color: muted }]}>No facecards loaded.</ThemedText>
+              ) : (
+                sortedFacecards.map((match) => {
+                  const debug = match.scorerDebug;
+                  const filterPreferenceFit = Number.isFinite(debug?.filterPreferenceFit)
+                    ? (debug?.filterPreferenceFit as number)
+                    : null;
+                  const signalAlignment = Number.isFinite(debug?.signalAlignment)
+                    ? (debug?.signalAlignment as number)
+                    : null;
+                  const profileSignalBlend = Number.isFinite(debug?.profileSignalBlend)
+                    ? (debug?.profileSignalBlend as number)
+                    : null;
+                  const viewerNeedsMetByTarget = Number.isFinite(debug?.viewerNeedsMetByTarget)
+                    ? (debug?.viewerNeedsMetByTarget as number)
+                    : null;
+                  const targetNeedsMetByViewer = Number.isFinite(debug?.targetNeedsMetByViewer)
+                    ? (debug?.targetNeedsMetByViewer as number)
+                    : null;
+                  const sharedSelfOverlap = Number.isFinite(debug?.sharedSelfOverlap)
+                    ? (debug?.sharedSelfOverlap as number)
+                    : null;
+                  const viewerReactionScore = Number.isFinite(debug?.viewerReactionScore)
+                    ? (debug?.viewerReactionScore as number)
+                    : null;
+                  const targetInterestScore = Number.isFinite(debug?.targetInterestScore)
+                    ? (debug?.targetInterestScore as number)
+                    : null;
+                  const noveltyScore = Number.isFinite(debug?.noveltyScore)
+                    ? (debug?.noveltyScore as number)
+                    : null;
+                  const finalScore = Number.isFinite(debug?.finalScore)
+                    ? (debug?.finalScore as number)
+                    : null;
+                  const tier3Compatibility = Number.isFinite(debug?.tier3Compatibility)
+                    ? (debug?.tier3Compatibility as number)
+                    : null;
+                  const tier3Confidence = Number.isFinite(debug?.tier3Confidence)
+                    ? (debug?.tier3Confidence as number)
+                    : null;
+                  const tier3Applied = debug?.tier3Applied === true;
+                  const tier3HardBlocker = debug?.tier3HardBlocker === true;
+                  const tier3Reason =
+                    typeof debug?.tier3Reason === 'string' ? debug.tier3Reason : null;
+                  return (
+                    <View key={match.account.id} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>
+                        {match.account.name ?? match.account.id}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`score=${match.score.toFixed(2)} final=${
+                          finalScore == null ? 'n/a' : finalScore.toFixed(3)
+                        } blend=${profileSignalBlend == null ? 'n/a' : profileSignalBlend.toFixed(3)}`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`fit=${
+                          filterPreferenceFit == null ? 'n/a' : filterPreferenceFit.toFixed(3)
+                        } align=${signalAlignment == null ? 'n/a' : signalAlignment.toFixed(3)} overlap=${
+                          sharedSelfOverlap == null ? 'n/a' : sharedSelfOverlap.toFixed(3)
+                        }`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`needs(v->t/t->v)=${
+                          viewerNeedsMetByTarget == null ? 'n/a' : viewerNeedsMetByTarget.toFixed(3)
+                        }/${targetNeedsMetByViewer == null ? 'n/a' : targetNeedsMetByViewer.toFixed(3)} react=${
+                          viewerReactionScore == null ? 'n/a' : viewerReactionScore.toFixed(3)
+                        } interest=${targetInterestScore == null ? 'n/a' : targetInterestScore.toFixed(3)} novelty=${
+                          noveltyScore == null ? 'n/a' : noveltyScore.toFixed(3)
+                        }`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`tier3=${tier3Applied ? 'applied' : 'off'} compat=${
+                          tier3Compatibility == null ? 'n/a' : tier3Compatibility.toFixed(2)
+                        } conf=${tier3Confidence == null ? 'n/a' : tier3Confidence.toFixed(2)} blocker=${
+                          tier3HardBlocker ? 'yes' : 'no'
+                        }`}
+                      </ThemedText>
+                      {tier3Reason ? (
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`tier3_reason=${tier3Reason}`}
+                        </ThemedText>
+                      ) : null}
+                    </View>
+                  );
+                })
               )}
             </View>
           </>
@@ -220,5 +371,17 @@ const styles = StyleSheet.create({
   signalItemText: {
     fontSize: 12,
     lineHeight: 18,
+  },
+  signalItem: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.32)',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 2,
+  },
+  signalItemToken: {
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

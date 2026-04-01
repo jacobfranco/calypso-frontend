@@ -45,11 +45,33 @@ type PrivatePromptChatMessage = {
 };
 
 type PromptChannel = 'private' | 'matchmaking';
+type ReactionStrength = -3 | -2 | -1 | 0 | 1 | 2 | 3;
+
+const PUBLIC_REACTION_STRENGTH_OPTIONS: ReactionStrength[] = [-3, -2, -1, 0, 1, 2, 3];
 
 const PRIVATE_PROMPT_PRIVACY_NOTE =
   'Your answers stay private and are only used for matchmaking.';
 const FACECARD_NOTE =
   'Facecards come from your highest-ranked candidate pool.';
+
+function reactionStrengthLabel(strength: ReactionStrength): string {
+  switch (strength) {
+    case -3:
+      return 'Strong pass';
+    case -2:
+      return 'Pass';
+    case -1:
+      return 'Slight pass';
+    case 0:
+      return 'Neutral';
+    case 1:
+      return 'Slight like';
+    case 2:
+      return 'Like';
+    case 3:
+      return 'Strong like';
+  }
+}
 
 function uniqueNonEmptyStrings(values: Array<string | null | undefined>): string[] {
   const out: string[] = [];
@@ -152,6 +174,7 @@ export default function HomeScreen() {
   const feedWarmupRetryCountRef = useRef(0);
   const [loading, setLoading] = useState(false);
   const [card, setCard] = useState<PublicPromptFeedCard | null>(null);
+  const [selectedReactionStrength, setSelectedReactionStrength] = useState<ReactionStrength>(0);
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
   const [facecardsOverlayOpen, setFacecardsOverlayOpen] = useState(false);
   const [facecardReacting, setFacecardReacting] = useState(false);
@@ -359,20 +382,24 @@ export default function HomeScreen() {
     loadCard();
   }, [loadCard]);
 
-  const handleReaction = useCallback(
-    async (reaction: 'LIKE' | 'DISLIKE' | 'SKIP') => {
-      if (!account || !token || !card) return;
-      setLoading(true);
-      try {
-        await postPublicPromptReaction(account.id, token, card.answerId, { reaction });
-        await loadCard();
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : 'Failed to react');
-        setLoading(false);
-      }
-    },
-    [account, card, loadCard, token]
-  );
+  useEffect(() => {
+    setSelectedReactionStrength(0);
+  }, [card?.answerId]);
+
+  const submitPublicReaction = useCallback(async () => {
+    if (!account || !token || !card) return;
+    setLoading(true);
+    try {
+      await postPublicPromptReaction(account.id, token, card.answerId, {
+        strength: selectedReactionStrength,
+      });
+      setSelectedReactionStrength(0);
+      await loadCard();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to react');
+      setLoading(false);
+    }
+  }, [account, card, loadCard, selectedReactionStrength, token]);
 
   const resetFacecardsOverlay = useCallback(() => {
     Keyboard.dismiss();
@@ -730,35 +757,62 @@ export default function HomeScreen() {
           <View style={[styles.card, styles.feedCard, { borderColor: cardBorder, backgroundColor: cardBg }]}>
             <ThemedText type="defaultSemiBold">{card.promptText}</ThemedText>
             <ThemedText style={[styles.bodyText, { color: muted }]}>{card.body}</ThemedText>
-            <View style={styles.actionsRow}>
-              {[
-                { label: 'Dislike', value: 'DISLIKE' as const },
-                { label: 'Skip', value: 'SKIP' as const },
-                { label: 'Like', value: 'LIKE' as const },
-              ].map((action) => (
-                <Pressable
-                  key={action.value}
-                  onPress={() => handleReaction(action.value)}
-                  disabled={loading}
-                  style={({ pressed }) => [
-                    styles.actionButton,
-                    {
-                      borderColor: cardBorder,
-                      backgroundColor: action.value === 'LIKE' ? primaryBg : 'transparent',
-                      opacity: pressed || loading ? 0.7 : 1,
-                    },
-                  ]}
-                >
-                  <ThemedText
-                    style={[
-                      styles.actionText,
-                      { color: action.value === 'LIKE' ? primaryText : muted },
-                    ]}
-                  >
-                    {action.label}
-                  </ThemedText>
-                </Pressable>
-              ))}
+            <View style={styles.reactionPicker}>
+              <View style={styles.reactionScaleRow}>
+                {PUBLIC_REACTION_STRENGTH_OPTIONS.map((strength) => {
+                  const isSelected = selectedReactionStrength === strength;
+                  const magnitude = Math.abs(strength);
+                  const dotSize = strength === 0 ? 14 : 14 + magnitude * 4;
+                  const activeColor =
+                    strength > 0 ? '#1d8f52' : strength < 0 ? '#d97706' : primaryBg;
+                  const inactiveBorder =
+                    strength > 0 ? 'rgba(29, 143, 82, 0.5)' : strength < 0 ? 'rgba(217, 119, 6, 0.5)' : cardBorder;
+                  return (
+                    <Pressable
+                      key={`reaction-${strength}`}
+                      onPress={() => setSelectedReactionStrength(strength)}
+                      disabled={loading}
+                      style={({ pressed }) => [
+                        styles.reactionDotTap,
+                        { opacity: pressed || loading ? 0.72 : 1 },
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.reactionDot,
+                          {
+                            width: dotSize,
+                            height: dotSize,
+                            borderColor: isSelected ? activeColor : inactiveBorder,
+                            backgroundColor: isSelected ? activeColor : 'transparent',
+                          },
+                        ]}
+                      />
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={styles.reactionLegendRow}>
+                <ThemedText style={[styles.mutedText, { color: muted }]}>Strong pass</ThemedText>
+                <ThemedText style={[styles.mutedText, { color: muted }]}>Strong like</ThemedText>
+              </View>
+              <ThemedText style={[styles.mutedText, { color: muted }]}>
+                {`Selected: ${reactionStrengthLabel(selectedReactionStrength)}`}
+              </ThemedText>
+              <Pressable
+                onPress={submitPublicReaction}
+                disabled={loading}
+                style={({ pressed }) => [
+                  styles.actionButton,
+                  {
+                    borderColor: primaryBg,
+                    backgroundColor: primaryBg,
+                    opacity: pressed || loading ? 0.55 : 1,
+                  },
+                ]}
+              >
+                <ThemedText style={[styles.actionText, { color: primaryText }]}>Next</ThemedText>
+              </Pressable>
             </View>
           </View>
         </View>
@@ -1079,6 +1133,30 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginTop: 8,
+  },
+  reactionPicker: {
+    marginTop: 8,
+    gap: 10,
+  },
+  reactionScaleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  reactionDotTap: {
+    flex: 1,
+    minHeight: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reactionDot: {
+    borderWidth: 1.5,
+    borderRadius: 999,
+  },
+  reactionLegendRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
   },
   actionButton: {
     flex: 1,

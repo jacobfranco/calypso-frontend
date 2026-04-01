@@ -101,6 +101,10 @@ export type PublicPromptAnswerPayload = {
 };
 
 export type PublicPromptReactionPayload = {
+  strength: -3 | -2 | -1 | 0 | 1 | 2 | 3;
+};
+
+export type FacecardReactionPayload = {
   reaction: 'LIKE' | 'DISLIKE' | 'SKIP';
 };
 
@@ -153,6 +157,30 @@ export type MatchCard = {
   account: Account;
   score: number;
   computedAt: number;
+  scorerDebug?: MatchScorerDebug;
+};
+
+export type MatchScorerDebug = {
+  filterPreferenceFit?: number;
+  viewerNeedsMetByTarget?: number;
+  targetNeedsMetByViewer?: number;
+  sharedSelfOverlap?: number;
+  signalAlignment?: number;
+  profileSignalBlend?: number;
+  viewerReactionScore?: number;
+  targetInterestScore?: number;
+  noveltyScore?: number;
+  finalScore?: number;
+  tier2Score?: number;
+  tier2Normalized?: number;
+  tier3Compatibility?: number;
+  tier3Confidence?: number;
+  tier3AppliedWeight?: number;
+  tier3HardBlocker?: boolean;
+  tier3Reason?: string;
+  tier3Applied?: boolean;
+  scoreBeforeTier3?: number;
+  scoreAfterTier3?: number;
 };
 
 function isSerializedAccountId(value: unknown): value is string {
@@ -175,8 +203,7 @@ export type SignalRecord = {
   count?: number;
   lastContext?: string;
   intent?: string;
-  confidence?: number;
-  importance?: number;
+  valence?: number;
 };
 
 export type SignalsResponse = {
@@ -211,6 +238,24 @@ type PhoneCodeResponse = {
   verification_token: string;
 };
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isTokenResponse(value: unknown): value is TokenResponse {
+  if (!isObjectRecord(value)) return false;
+  return (
+    typeof value.access_token === 'string' &&
+    typeof value.token_type === 'string' &&
+    typeof value.scope === 'string' &&
+    typeof value.created_at === 'number'
+  );
+}
+
+function isPhoneCodeResponse(value: unknown): value is PhoneCodeResponse {
+  return isObjectRecord(value) && typeof value.verification_token === 'string';
+}
+
 export async function createAccount(payload: SignupRequest): Promise<TokenResponse> {
   const body = {
     name: payload.name,
@@ -228,12 +273,12 @@ export async function createAccount(payload: SignupRequest): Promise<TokenRespon
     body: JSON.stringify(body),
   });
 
-  const json = (await res.json()) as TokenResponse | ErrorDetails;
+  const json = (await res.json()) as unknown;
   if (!res.ok) {
     throw new Error(extractErrorMessage(json, res.status));
   }
 
-  if (!('access_token' in json)) {
+  if (!isTokenResponse(json)) {
     throw new Error('Unexpected response from /api/accounts');
   }
 
@@ -282,16 +327,16 @@ export async function verifyPhoneCode(
     body: JSON.stringify({ phone_number: phoneNumber, code }),
   });
 
-  const json = (await res.json()) as PhoneCodeResponse | ErrorDetails;
+  const json = (await res.json()) as unknown;
   if (!res.ok) {
     throw new Error(extractErrorMessage(json, res.status));
   }
 
-  if (!('verification_token' in json) && !('access_token' in json)) {
-    throw new Error('Unexpected response from /api/accounts/phone/verify');
+  if (isPhoneCodeResponse(json) || isTokenResponse(json)) {
+    return json;
   }
 
-  return json;
+  throw new Error('Unexpected response from /api/accounts/phone/verify');
 }
 
 export async function createPhoneAccount(payload: PhoneSignupRequest): Promise<TokenResponse> {
@@ -312,12 +357,12 @@ export async function createPhoneAccount(payload: PhoneSignupRequest): Promise<T
     body: JSON.stringify(body),
   });
 
-  const json = (await res.json()) as TokenResponse | ErrorDetails;
+  const json = (await res.json()) as unknown;
   if (!res.ok) {
     throw new Error(extractErrorMessage(json, res.status));
   }
 
-  if (!('access_token' in json)) {
+  if (!isTokenResponse(json)) {
     throw new Error('Unexpected response from /api/accounts');
   }
 
@@ -361,12 +406,12 @@ export async function loginWithPassword(
     body: JSON.stringify(body),
   });
 
-  const json = (await res.json()) as TokenResponse | ErrorDetails;
+  const json = (await res.json()) as unknown;
   if (!res.ok) {
     throw new Error(extractErrorMessage(json, res.status));
   }
 
-  if (!('access_token' in json)) {
+  if (!isTokenResponse(json)) {
     throw new Error('Unexpected response from /oauth/token');
   }
 
@@ -650,7 +695,7 @@ export async function postFacecardReaction(
   accountId: string,
   token: string,
   targetAccountId: string,
-  payload: PublicPromptReactionPayload
+  payload: FacecardReactionPayload
 ): Promise<void> {
   const targetId = targetAccountId?.trim();
   if (!isSerializedAccountId(targetId)) {
