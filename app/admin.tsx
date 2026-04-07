@@ -197,7 +197,7 @@ export default function AdminScreen() {
                     style={styles.signalItem}
                   >
                     <ThemedText style={styles.signalItemToken}>
-                      {record.token}
+                      {record.canonicalToken ?? record.token}
                     </ThemedText>
                     <ThemedText style={[styles.signalItemText, { color: muted }]}>
                       {`intent=${(record.intent ?? 'self').toLowerCase()} valence=${fmtSigned(record.valence ?? 1)}`}
@@ -209,6 +209,23 @@ export default function AdminScreen() {
                 ))
               )}
             </View>
+
+            <Pressable
+              onPress={() => router.push('/admin-signal-concepts')}
+              style={({ pressed }) => [
+                styles.card,
+                {
+                  borderColor: cardBorder,
+                  backgroundColor: cardBg,
+                  opacity: pressed ? 0.75 : 1,
+                },
+              ]}
+            >
+              <ThemedText type="defaultSemiBold">Temp: Signal concept registry + drift queue</ThemedText>
+              <ThemedText style={[styles.mutedText, { color: muted }]}>
+                Open full-screen tooling (registry, candidates, promote/reject).
+              </ThemedText>
+            </Pressable>
 
             <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
               <View style={styles.cardHeader}>

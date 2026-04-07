@@ -196,6 +196,8 @@ function isValidMatchCard(value: MatchCard | null | undefined): value is MatchCa
 
 export type SignalRecord = {
   token: string;
+  rawToken?: string;
+  canonicalToken?: string;
   source?: string;
   sourceId?: string;
   firstSeen?: number;
@@ -210,6 +212,40 @@ export type SignalsResponse = {
   accountId: number;
   tokens: string[];
   records: SignalRecord[];
+};
+
+export type SignalConcept = {
+  concept: string;
+  aliases: string[];
+  parents: Record<string, number>;
+};
+
+export type SignalConceptRegistryResponse = {
+  version: number;
+  concepts: SignalConcept[];
+};
+
+export type SignalConceptCandidate = {
+  rawToken: string;
+  seenCount: number;
+  firstSeen: number;
+  lastSeen: number;
+  lastSource?: string;
+  exampleContexts: string[];
+  observedAccounts?: Array<{
+    accountId: number;
+    intent?: string;
+    seenCount: number;
+    averageValence: number;
+  }>;
+  suggestedCanonical?: string;
+  suggestionScore?: number;
+  autoReady?: boolean;
+};
+
+export type SignalConceptCandidatesResponse = {
+  version: number;
+  candidates: SignalConceptCandidate[];
 };
 
 export type TokenResponse = {
@@ -1045,4 +1081,120 @@ export async function fetchSignals(accountId: string, token: string): Promise<Si
     throw new Error('Unexpected response from /api/accounts/{id}/signals');
   }
   return json;
+}
+
+export async function fetchSignalConceptRegistry(
+  accountId: string,
+  token: string
+): Promise<SignalConceptRegistryResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/admin/signal-concepts`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as SignalConceptRegistryResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('version' in json) || !('concepts' in json) || !Array.isArray(json.concepts)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/admin/signal-concepts');
+  }
+  return json;
+}
+
+export async function fetchSignalConceptCandidates(
+  accountId: string,
+  token: string,
+  limit = 100
+): Promise<SignalConceptCandidatesResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/admin/signal-concepts/candidates?limit=${limit}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  const json = (await res.json()) as SignalConceptCandidatesResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('version' in json) || !('candidates' in json) || !Array.isArray(json.candidates)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/admin/signal-concepts/candidates');
+  }
+  return json;
+}
+
+export async function promoteSignalConceptCandidate(
+  accountId: string,
+  token: string,
+  rawToken: string,
+  canonicalToken: string
+): Promise<{
+  changed: boolean;
+  rawToken?: string;
+  canonicalToken?: string;
+  migratedStoredAccounts?: number;
+  replayedObservedAccounts?: number;
+  replayedContextualOwners?: number;
+  observedAccountIds?: number[];
+}> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/admin/signal-concepts/promote`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ rawToken, canonicalToken }),
+  });
+
+  const json = (await res.json()) as
+    | {
+        changed?: boolean;
+        rawToken?: string;
+        canonicalToken?: string;
+        migratedStoredAccounts?: number;
+        replayedObservedAccounts?: number;
+        replayedContextualOwners?: number;
+        observedAccountIds?: number[];
+      }
+    | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  return {
+    changed: Boolean('changed' in json ? json.changed : false),
+    rawToken: 'rawToken' in json ? json.rawToken : undefined,
+    canonicalToken: 'canonicalToken' in json ? json.canonicalToken : undefined,
+    migratedStoredAccounts:
+      'migratedStoredAccounts' in json ? json.migratedStoredAccounts : undefined,
+    replayedObservedAccounts:
+      'replayedObservedAccounts' in json ? json.replayedObservedAccounts : undefined,
+    replayedContextualOwners:
+      'replayedContextualOwners' in json ? json.replayedContextualOwners : undefined,
+    observedAccountIds: 'observedAccountIds' in json ? json.observedAccountIds : undefined,
+  };
+}
+
+export async function rejectSignalConceptCandidate(
+  accountId: string,
+  token: string,
+  rawToken: string
+): Promise<boolean> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/admin/signal-concepts/reject`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ rawToken }),
+  });
+
+  const json = (await res.json()) as { changed?: boolean } | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  return Boolean('changed' in json ? json.changed : false);
 }

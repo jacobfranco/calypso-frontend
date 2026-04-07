@@ -50,6 +50,7 @@ function RootNavigator() {
       <Stack.Screen name="prompts" options={{ headerShown: false }} />
       <Stack.Screen name="facecard-photos" options={{ headerShown: false }} />
       <Stack.Screen name="admin" options={{ headerShown: false }} />
+      <Stack.Screen name="admin-signal-concepts" options={{ headerShown: false }} />
       <Stack.Screen name="onboarding/index" options={{ headerShown: false }} />
     </Stack>
   );
