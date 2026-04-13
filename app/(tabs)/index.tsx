@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -15,6 +16,7 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -154,15 +156,14 @@ function toConversationLines(messages: PrivatePromptChatMessage[]): string[] {
 
 function buildPrivatePromptBody(parts: string[], answersByPart: string[][]): string {
   const sections: string[] = [];
-  parts.forEach((part, idx) => {
+  parts.forEach((_, idx) => {
     const answers = answersByPart[idx] ?? [];
     const merged = answers
       .map((value) => value.trim())
       .filter(Boolean)
       .join(' ');
     if (!merged) return;
-    sections.push(`Q${idx + 1}: ${part}`);
-    sections.push(`A${idx + 1}: ${merged}`);
+    sections.push(merged);
   });
   return sections.join('\n');
 }
@@ -170,6 +171,7 @@ function buildPrivatePromptBody(parts: string[], answersByPart: string[][]): str
 export default function HomeScreen() {
   const { account, token } = useAuth();
   const facecardsScrollRef = useRef<ScrollView>(null);
+  const privateChatScrollRef = useRef<ScrollView>(null);
   const feedWarmupRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const feedWarmupRetryCountRef = useRef(0);
   const [loading, setLoading] = useState(false);
@@ -378,13 +380,27 @@ export default function HomeScreen() {
     }
   }, [account, clearFeedWarmupRetry, sanitizeFacecardDeck, token]);
 
-  useEffect(() => {
-    loadCard();
-  }, [loadCard]);
+  const scrollPrivateChatToBottom = useCallback((animated: boolean) => {
+    requestAnimationFrame(() => {
+      privateChatScrollRef.current?.scrollToEnd({ animated });
+    });
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadCard();
+      return () => {};
+    }, [loadCard])
+  );
 
   useEffect(() => {
     setSelectedReactionStrength(0);
   }, [card?.answerId]);
+
+  useEffect(() => {
+    if (!overlayOpen) return;
+    scrollPrivateChatToBottom(privatePromptMessages.length > 2);
+  }, [overlayOpen, privatePromptMessages, scrollPrivateChatToBottom]);
 
   const submitPublicReaction = useCallback(async () => {
     if (!account || !token || !card) return;
@@ -695,6 +711,32 @@ export default function HomeScreen() {
     }
   }, [account, activePrivatePrompt, activePromptChannel, closeOverlay, token]);
 
+  const promptPrivatePromptExit = useCallback(() => {
+    if (privatePromptSubmitting) return;
+    Keyboard.dismiss();
+    Alert.alert(
+      'Private prompt',
+      'Skip this question, or come back later?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Come back later',
+          onPress: closeOverlay,
+        },
+        {
+          text: 'Skip question',
+          style: 'destructive',
+          onPress: () => {
+            void skipPrivatePrompt();
+          },
+        },
+      ]
+    );
+  }, [closeOverlay, privatePromptSubmitting, skipPrivatePrompt]);
+
   return (
     <ThemedView style={styles.container}>
       <View style={styles.quickActionsRow}>
@@ -962,18 +1004,57 @@ export default function HomeScreen() {
         transparent={false}
         animationType="fade"
         visible={overlayOpen && !!activePrivatePrompt}
-        onRequestClose={closeOverlay}
+        onRequestClose={promptPrivatePromptExit}
       >
         <KeyboardAvoidingView
-          style={[styles.overlayScreen, { backgroundColor: overlayScreenBg }]}
+          style={[styles.privateOverlayScreen, { backgroundColor: overlayScreenBg }]}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
           <Pressable style={styles.overlayDismissLayer} onPress={Keyboard.dismiss} />
-          <View style={[styles.overlayCard, { borderColor: cardBorder, backgroundColor: overlayCardBg }]}>
-            <View style={styles.overlayHeader}>
-              <ThemedText type="subtitle">{promptOverlayTitle}</ThemedText>
-              <Pressable onPress={closeOverlay} disabled={privatePromptSubmitting}>
-                <ThemedText style={[styles.mutedText, { color: muted }]}>Close</ThemedText>
+          <View
+            style={[styles.privateOverlayCard, { borderColor: cardBorder, backgroundColor: overlayCardBg }]}
+          >
+            <View style={styles.privateOverlayHeader}>
+              <View style={styles.privateOverlayHeaderLeft}>
+                <Pressable
+                  onPress={promptPrivatePromptExit}
+                  disabled={privatePromptSubmitting}
+                  style={({ pressed }) => [
+                    styles.privateOverlayCloseButton,
+                    {
+                      borderColor: cardBorder,
+                      opacity: pressed || privatePromptSubmitting ? 0.72 : 1,
+                    },
+                  ]}
+                >
+                  <Ionicons name="close" size={20} color={muted} />
+                </Pressable>
+                <View style={styles.privateOverlayHeaderTextWrap}>
+                  <ThemedText type="subtitle" numberOfLines={1}>
+                    {promptOverlayTitle}
+                  </ThemedText>
+                  <ThemedText style={[styles.mutedText, { color: muted }]} numberOfLines={1}>
+                    Part {Math.min(privatePromptPartIndex + 1, Math.max(privatePromptParts.length, 1))} of{' '}
+                    {Math.max(privatePromptParts.length, 1)}
+                  </ThemedText>
+                </View>
+              </View>
+
+              <Pressable
+                disabled={privatePromptSubmitting}
+                onPress={shouldSubmitNow ? submitPrivatePromptAnswer : sendPrivatePromptTurn}
+                style={({ pressed }) => [
+                  styles.privateOverlayPrimaryAction,
+                  {
+                    borderColor: primaryBg,
+                    backgroundColor: primaryBg,
+                    opacity: pressed || privatePromptSubmitting ? 0.7 : 1,
+                  },
+                ]}
+              >
+                <ThemedText style={[styles.actionText, { color: primaryText }]}>
+                  {shouldSubmitNow ? 'Submit' : 'Send'}
+                </ThemedText>
               </Pressable>
             </View>
 
@@ -981,15 +1062,15 @@ export default function HomeScreen() {
               {promptBannerNote}
             </ThemedText>
 
-            <ThemedText style={[styles.mutedText, { color: muted }]}>
-              Part {Math.min(privatePromptPartIndex + 1, Math.max(privatePromptParts.length, 1))} of{' '}
-              {Math.max(privatePromptParts.length, 1)}
-            </ThemedText>
-
             <ScrollView
-              style={[styles.chatTimeline, { borderColor: cardBorder }]}
+              ref={privateChatScrollRef}
+              style={[styles.privateChatTimeline, { borderColor: cardBorder }]}
               contentContainerStyle={styles.chatTimelineContent}
               keyboardShouldPersistTaps="handled"
+              onContentSizeChange={() => {
+                if (!overlayOpen) return;
+                privateChatScrollRef.current?.scrollToEnd({ animated: true });
+              }}
             >
               {privatePromptMessages.map((message, idx) => {
                 const isUser = message.role === 'user';
@@ -1026,40 +1107,10 @@ export default function HomeScreen() {
               placeholderTextColor={muted}
               editable={!privatePromptSubmitting}
               style={[
-                styles.textInput,
+                styles.privateTextInput,
                 { borderColor: cardBorder, color: textColor, backgroundColor: inputBg },
               ]}
             />
-
-            <View style={styles.overlayActions}>
-              <Pressable
-                disabled={privatePromptSubmitting}
-                onPress={skipPrivatePrompt}
-                style={({ pressed }) => [
-                  styles.actionButton,
-                  { borderColor: cardBorder, opacity: pressed || privatePromptSubmitting ? 0.7 : 1 },
-                ]}
-              >
-                <ThemedText style={[styles.actionText, { color: muted }]}>Skip</ThemedText>
-              </Pressable>
-
-              <Pressable
-                disabled={privatePromptSubmitting}
-                onPress={shouldSubmitNow ? submitPrivatePromptAnswer : sendPrivatePromptTurn}
-                style={({ pressed }) => [
-                  styles.actionButton,
-                  {
-                    borderColor: primaryBg,
-                    backgroundColor: primaryBg,
-                    opacity: pressed || privatePromptSubmitting ? 0.7 : 1,
-                  },
-                ]}
-              >
-                <ThemedText style={[styles.actionText, { color: primaryText }]}>
-                  {shouldSubmitNow ? 'Submit' : 'Send'}
-                </ThemedText>
-              </Pressable>
-            </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1186,6 +1237,52 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 12,
   },
+  privateOverlayScreen: {
+    flex: 1,
+  },
+  privateOverlayCard: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 0,
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 52 : 20,
+    paddingBottom: 16,
+    gap: 12,
+  },
+  privateOverlayHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  privateOverlayHeaderLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  privateOverlayHeaderTextWrap: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  privateOverlayCloseButton: {
+    width: 36,
+    height: 36,
+    borderWidth: 1,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  privateOverlayPrimaryAction: {
+    minWidth: 88,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+  },
   overlayHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1199,6 +1296,14 @@ const styles = StyleSheet.create({
   chatTimelineContent: {
     padding: 10,
     gap: 8,
+    flexGrow: 1,
+    justifyContent: 'flex-end',
+  },
+  privateChatTimeline: {
+    flex: 1,
+    minHeight: 0,
+    borderWidth: 1,
+    borderRadius: 12,
   },
   chatBubble: {
     borderWidth: 1,
@@ -1219,6 +1324,15 @@ const styles = StyleSheet.create({
   },
   textInput: {
     minHeight: 90,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    textAlignVertical: 'top',
+  },
+  privateTextInput: {
+    minHeight: 130,
+    maxHeight: 210,
     borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 12,

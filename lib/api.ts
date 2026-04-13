@@ -241,6 +241,7 @@ export type SignalConceptCandidate = {
   suggestedCanonical?: string;
   suggestionScore?: number;
   autoReady?: boolean;
+  blockedAt?: number;
 };
 
 export type SignalConceptCandidatesResponse = {
@@ -265,7 +266,7 @@ export type SignalDisambiguationCandidatesResponse = {
   candidates: SignalDisambiguationCandidate[];
 };
 
-export type SignalConceptCandidateAction = 'create' | 'map' | 'reject';
+export type SignalConceptCandidateAction = 'create' | 'map' | 'reject' | 'block' | 'unblock';
 
 export type TokenResponse = {
   access_token: string;
@@ -1142,6 +1143,30 @@ export async function fetchSignalConceptCandidates(
   }
   if (!('version' in json) || !('candidates' in json) || !Array.isArray(json.candidates)) {
     throw new Error('Unexpected response from /api/accounts/{id}/admin/signal-concepts/candidates');
+  }
+  return json;
+}
+
+export async function fetchBlockedSignalConceptCandidates(
+  accountId: string,
+  token: string,
+  limit = 100
+): Promise<SignalConceptCandidatesResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/admin/signal-concepts/blocked?limit=${limit}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  const json = (await res.json()) as SignalConceptCandidatesResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('version' in json) || !('candidates' in json) || !Array.isArray(json.candidates)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/admin/signal-concepts/blocked');
   }
   return json;
 }

@@ -17,6 +17,7 @@ import { useAuth } from '@/lib/auth';
 import {
   actOnSignalConceptCandidate,
   fetchSignalConceptCandidates,
+  fetchBlockedSignalConceptCandidates,
   fetchSignalDisambiguationCandidates,
   fetchSignalConceptRegistry,
   SignalConcept,
@@ -32,6 +33,7 @@ export default function AdminSignalConceptsScreen() {
   const [actionLoading, setActionLoading] = useState(false);
   const [concepts, setConcepts] = useState<SignalConcept[]>([]);
   const [candidates, setCandidates] = useState<SignalConceptCandidate[]>([]);
+  const [blockedCandidates, setBlockedCandidates] = useState<SignalConceptCandidate[]>([]);
   const [disambiguationCandidates, setDisambiguationCandidates] = useState<SignalDisambiguationCandidate[]>([]);
   const [version, setVersion] = useState<number>(0);
   const [query, setQuery] = useState('');
@@ -94,6 +96,21 @@ export default function AdminSignalConceptsScreen() {
       return false;
     });
   }, [candidates, normalizedQuery]);
+
+  const filteredBlockedCandidates = useMemo(() => {
+    if (!normalizedQuery) {
+      return blockedCandidates;
+    }
+    return blockedCandidates.filter((candidate) => {
+      if (candidate.rawToken.toLowerCase().includes(normalizedQuery)) {
+        return true;
+      }
+      if ((candidate.suggestedCanonical ?? '').toLowerCase().includes(normalizedQuery)) {
+        return true;
+      }
+      return false;
+    });
+  }, [blockedCandidates, normalizedQuery]);
 
   const canonicalConceptSet = useMemo(() => {
     const out = new Set<string>();
@@ -161,14 +178,16 @@ export default function AdminSignalConceptsScreen() {
     setLoading(true);
     setMessage(null);
     try {
-      const [registry, drift, disambiguation] = await Promise.all([
+      const [registry, drift, blocked, disambiguation] = await Promise.all([
         fetchSignalConceptRegistry(account.id, token),
         fetchSignalConceptCandidates(account.id, token, 500),
+        fetchBlockedSignalConceptCandidates(account.id, token, 500),
         fetchSignalDisambiguationCandidates(account.id, token, 200),
       ]);
       setVersion(registry.version ?? 0);
       setConcepts(registry.concepts ?? []);
       setCandidates(drift.candidates ?? []);
+      setBlockedCandidates(blocked.candidates ?? []);
       setDisambiguationCandidates(disambiguation.candidates ?? []);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to load signal concept data');
@@ -348,10 +367,69 @@ export default function AdminSignalConceptsScreen() {
     [account, token, confirmAction, refresh]
   );
 
+  const blockCandidate = useCallback(
+    async (rawToken: string) => {
+      if (!account || !token) return;
+      const confirmed = await confirmAction(
+        'Block Candidate?',
+        `Block "${rawToken}" so new observations are ignored until it is unblocked?`
+      );
+      if (!confirmed) {
+        return;
+      }
+      setActionLoading(true);
+      setMessage(null);
+      try {
+        await actOnSignalConceptCandidate(account.id, token, 'block', rawToken);
+        setCanonicalDraftByRaw((prev) => {
+          const next = { ...prev };
+          delete next[rawToken];
+          return next;
+        });
+        await refresh();
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : 'Failed to block candidate');
+      } finally {
+        setActionLoading(false);
+      }
+    },
+    [account, token, confirmAction, refresh]
+  );
+
+  const unblockCandidate = useCallback(
+    async (rawToken: string) => {
+      if (!account || !token) return;
+      const confirmed = await confirmAction(
+        'Unblock Candidate?',
+        `Unblock "${rawToken}" and return it to the drift queue?`
+      );
+      if (!confirmed) {
+        return;
+      }
+      setActionLoading(true);
+      setMessage(null);
+      try {
+        await actOnSignalConceptCandidate(account.id, token, 'unblock', rawToken);
+        setCanonicalDraftByRaw((prev) => {
+          const next = { ...prev };
+          delete next[rawToken];
+          return next;
+        });
+        await refresh();
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : 'Failed to unblock candidate');
+      } finally {
+        setActionLoading(false);
+      }
+    },
+    [account, token, confirmAction, refresh]
+  );
+
   useEffect(() => {
     if (!account || !token) {
       setConcepts([]);
       setCandidates([]);
+      setBlockedCandidates([]);
       setDisambiguationCandidates([]);
       return;
     }
@@ -377,7 +455,7 @@ export default function AdminSignalConceptsScreen() {
 
         <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
           <ThemedText style={[styles.mutedText, { color: muted }]}>
-            {`Registry v${version} | concepts=${concepts.length} | candidates=${candidates.length} | disambiguation=${disambiguationCandidates.length}`}
+            {`Registry v${version} | concepts=${concepts.length} | candidates=${candidates.length} | blocked=${blockedCandidates.length} | disambiguation=${disambiguationCandidates.length}`}
           </ThemedText>
           <View style={styles.toolbarRow}>
             <TextInput
@@ -482,10 +560,65 @@ export default function AdminSignalConceptsScreen() {
                     >
                       <ThemedText style={[styles.mutedText, { color: muted }]}>Reject</ThemedText>
                     </Pressable>
+                    <Pressable
+                      onPress={() => void blockCandidate(candidate.rawToken)}
+                      disabled={actionLoading}
+                      style={[styles.smallButton, { borderColor: cardBorder }]}
+                    >
+                      <ThemedText style={[styles.mutedText, { color: muted }]}>Block</ThemedText>
+                    </Pressable>
                   </View>
                 </View>
               );
             })
+          )}
+        </View>
+
+        <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+          <ThemedText type="defaultSemiBold">
+            Blocked Candidates ({filteredBlockedCandidates.length}/{blockedCandidates.length})
+          </ThemedText>
+          {loading && blockedCandidates.length === 0 ? (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator />
+              <ThemedText>Loading blocked candidates...</ThemedText>
+            </View>
+          ) : filteredBlockedCandidates.length === 0 ? (
+            <ThemedText style={[styles.mutedText, { color: muted }]}>No blocked candidates found.</ThemedText>
+          ) : (
+            filteredBlockedCandidates.map((candidate) => (
+              <View key={`blocked-${candidate.rawToken}`} style={styles.item}>
+                <ThemedText style={styles.itemToken}>{candidate.rawToken}</ThemedText>
+                <ThemedText style={[styles.mutedText, { color: muted }]}>
+                  {`seen=${candidate.seenCount} source=${candidate.lastSource ?? 'unknown'} blockedAt=${
+                    candidate.blockedAt ? new Date(candidate.blockedAt).toLocaleString() : 'unknown'
+                  }`}
+                </ThemedText>
+                {candidate.suggestedCanonical ? (
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {`suggested=${candidate.suggestedCanonical} score=${
+                      Number.isFinite(candidate.suggestionScore)
+                        ? (candidate.suggestionScore as number).toFixed(2)
+                        : 'n/a'
+                    }`}
+                  </ThemedText>
+                ) : null}
+                {candidate.exampleContexts.length > 0 ? (
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {`example: ${candidate.exampleContexts[0]}`}
+                  </ThemedText>
+                ) : null}
+                <View style={styles.actionRow}>
+                  <Pressable
+                    onPress={() => void unblockCandidate(candidate.rawToken)}
+                    disabled={actionLoading}
+                    style={[styles.smallButton, { borderColor: cardBorder }]}
+                  >
+                    <ThemedText style={[styles.mutedText, { color: muted }]}>Unblock</ThemedText>
+                  </Pressable>
+                </View>
+              </View>
+            ))
           )}
         </View>
 
