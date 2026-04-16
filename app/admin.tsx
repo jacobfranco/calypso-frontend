@@ -12,11 +12,13 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
+  fetchAdminSilhouette,
   fetchFacecards,
   fetchSignals,
   MatchCard,
   postDebugSummonNextPrivatePrompt,
   SignalRecord,
+  SilhouetteResponse,
 } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
@@ -38,8 +40,10 @@ export default function AdminScreen() {
   const { account, token } = useAuth();
   const [debugPromptLoading, setDebugPromptLoading] = useState(false);
   const [signalsLoading, setSignalsLoading] = useState(false);
+  const [silhouetteLoading, setSilhouetteLoading] = useState(false);
   const [facecardsLoading, setFacecardsLoading] = useState(false);
   const [signalRecords, setSignalRecords] = useState<SignalRecord[]>([]);
+  const [silhouette, setSilhouette] = useState<SilhouetteResponse | null>(null);
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -68,6 +72,14 @@ export default function AdminScreen() {
     () => facecards.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
     [facecards]
   );
+  const silhouettePartnerCompAnchors = useMemo(
+    () => (silhouette?.anchors ?? []).filter((anchor) => (anchor.kind ?? '').toLowerCase() === 'partner_comp'),
+    [silhouette]
+  );
+  const silhouetteGeneralAnchors = useMemo(
+    () => (silhouette?.anchors ?? []).filter((anchor) => (anchor.kind ?? '').toLowerCase() !== 'partner_comp'),
+    [silhouette]
+  );
 
   const refreshSignals = useCallback(async () => {
     if (!account || !token) return;
@@ -95,15 +107,30 @@ export default function AdminScreen() {
     }
   }, [account, token]);
 
+  const refreshSilhouette = useCallback(async () => {
+    if (!account || !token) return;
+    setSilhouetteLoading(true);
+    try {
+      const next = await fetchAdminSilhouette(account.id, token);
+      setSilhouette(next);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to load silhouette');
+    } finally {
+      setSilhouetteLoading(false);
+    }
+  }, [account, token]);
+
   useEffect(() => {
     if (!account || !token) {
       setSignalRecords([]);
+      setSilhouette(null);
       setFacecards([]);
       return;
     }
     void refreshSignals();
+    void refreshSilhouette();
     void refreshFacecards();
-  }, [account, refreshFacecards, refreshSignals, token]);
+  }, [account, refreshFacecards, refreshSignals, refreshSilhouette, token]);
 
   const summonDebugPrivatePrompt = useCallback(async () => {
     if (!account || !token) return;
@@ -170,9 +197,9 @@ export default function AdminScreen() {
               </ThemedText>
             </Pressable>
 
-            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-              <View style={styles.cardHeader}>
-                <ThemedText type="defaultSemiBold">Temp: Extracted signals</ThemedText>
+              <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+                <View style={styles.cardHeader}>
+                  <ThemedText type="defaultSemiBold">Temp: Extracted signals</ThemedText>
                 <Pressable
                   onPress={refreshSignals}
                   disabled={signalsLoading || debugPromptLoading || facecardsLoading}
@@ -207,6 +234,86 @@ export default function AdminScreen() {
                     </ThemedText>
                   </View>
                 ))
+              )}
+            </View>
+
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <View style={styles.cardHeader}>
+                <ThemedText type="defaultSemiBold">Temp: Silhouette (read-only)</ThemedText>
+                <Pressable
+                  onPress={refreshSilhouette}
+                  disabled={silhouetteLoading || signalsLoading || facecardsLoading || debugPromptLoading}
+                >
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {silhouetteLoading ? 'Refreshing...' : 'Refresh'}
+                  </ThemedText>
+                </Pressable>
+              </View>
+
+              {silhouetteLoading ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator />
+                  <ThemedText>Loading silhouette...</ThemedText>
+                </View>
+              ) : !silhouette ? (
+                <ThemedText style={[styles.mutedText, { color: muted }]}>No silhouette loaded.</ThemedText>
+              ) : (
+                <>
+                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                    {`maturity=${silhouette.maturity ?? 'empty'} version=${silhouette.version ?? 1} updatedAt=${
+                      silhouette.updatedAt ?? 0
+                    }`}
+                  </ThemedText>
+                  {silhouette.story ? (
+                    <View style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>story</ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {silhouette.story}
+                      </ThemedText>
+                    </View>
+                  ) : null}
+                  {(silhouette.facets ?? []).slice(0, 8).map((facet) => (
+                    <View key={`facet-${facet.key}`} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>{facet.key}</ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`${facet.summary} (conf=${(facet.confidence ?? 0).toFixed(2)})`}
+                      </ThemedText>
+                    </View>
+                  ))}
+                  {silhouettePartnerCompAnchors.length > 0 ? (
+                    <ThemedText style={[styles.signalItemText, { color: muted }]}>partner_comps</ThemedText>
+                  ) : null}
+                  {silhouettePartnerCompAnchors.slice(0, 6).map((anchor, idx) => (
+                    <View key={`anchor-${anchor.label}-${idx}`} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>{anchor.label}</ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`${anchor.meaning} (conf=${(anchor.confidence ?? 0).toFixed(2)})`}
+                      </ThemedText>
+                    </View>
+                  ))}
+                  {silhouetteGeneralAnchors.slice(0, 6).map((anchor, idx) => (
+                    <View key={`anchor-general-${anchor.label}-${idx}`} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>{anchor.label}</ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`${anchor.meaning} (conf=${(anchor.confidence ?? 0).toFixed(2)})`}
+                      </ThemedText>
+                    </View>
+                  ))}
+                  {(silhouette.metaObservations ?? []).slice(0, 6).map((meta) => (
+                    <View key={`meta-${meta.key}`} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>{meta.key}</ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`${meta.summary} (conf=${(meta.confidence ?? 0).toFixed(2)})`}
+                      </ThemedText>
+                    </View>
+                  ))}
+                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                    {`evidence=${(silhouette.evidence ?? []).length} history=${(silhouette.history ?? []).length}`}
+                  </ThemedText>
+                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                    {JSON.stringify(silhouette)}
+                  </ThemedText>
+                </>
               )}
             </View>
 

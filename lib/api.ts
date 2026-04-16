@@ -266,6 +266,62 @@ export type SignalDisambiguationCandidatesResponse = {
   candidates: SignalDisambiguationCandidate[];
 };
 
+export type SilhouetteFacet = {
+  key: string;
+  summary: string;
+  confidence: number;
+  updatedAt?: number;
+  evidenceIds?: string[];
+};
+
+export type SilhouetteAnchor = {
+  label: string;
+  kind?: string;
+  meaning: string;
+  confidence: number;
+  updatedAt?: number;
+  evidenceIds?: string[];
+};
+
+export type SilhouetteMetaObservation = {
+  key: string;
+  summary: string;
+  confidence: number;
+  updatedAt?: number;
+  evidenceIds?: string[];
+};
+
+export type SilhouetteEvidence = {
+  id: string;
+  source?: string;
+  sourceId?: string;
+  promptId?: string;
+  excerpt?: string;
+  createdAt?: number;
+};
+
+export type SilhouetteHistory = {
+  eventId: string;
+  source?: string;
+  sourceId?: string;
+  summary?: string;
+  opCount?: number;
+  updatedAt?: number;
+};
+
+export type SilhouetteResponse = {
+  accountId: number;
+  version?: number;
+  maturity?: 'empty' | 'sparse' | 'mature' | string;
+  story?: string;
+  facets?: SilhouetteFacet[];
+  anchors?: SilhouetteAnchor[];
+  metaObservations?: SilhouetteMetaObservation[];
+  evidence?: SilhouetteEvidence[];
+  history?: SilhouetteHistory[];
+  updatedAt?: number;
+};
+
 export type SignalConceptCandidateAction = 'create' | 'map' | 'reject' | 'block' | 'unblock';
 
 export type TokenResponse = {
@@ -1191,6 +1247,26 @@ export async function fetchSignalDisambiguationCandidates(
   }
   if (!('candidates' in json) || !Array.isArray(json.candidates)) {
     throw new Error('Unexpected response from /api/accounts/{id}/admin/signal-disambiguation/candidates');
+  }
+  return json;
+}
+
+export async function fetchAdminSilhouette(
+  accountId: string,
+  token: string
+): Promise<SilhouetteResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/admin/silhouette`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as SilhouetteResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('accountId' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/admin/silhouette');
   }
   return json;
 }
