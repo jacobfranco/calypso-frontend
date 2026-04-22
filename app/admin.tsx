@@ -4,6 +4,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -12,7 +13,9 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
+  AdminPairScoreResponse,
   fetchAdminLlmTelemetry,
+  fetchAdminPairScore,
   fetchAdminSilhouette,
   fetchFacecards,
   fetchSignals,
@@ -37,6 +40,12 @@ function fmtSigned(value: number): string {
   return clamped >= 0 ? `+${abs}` : `-${abs}`;
 }
 
+function fmtDelta(value: number | null | undefined): string {
+  if (!Number.isFinite(value)) return 'n/a';
+  const rounded = (value as number).toFixed(2);
+  return (value as number) >= 0 ? `+${rounded}` : rounded;
+}
+
 export default function AdminScreen() {
   const router = useRouter();
   const { account, token } = useAuth();
@@ -49,6 +58,11 @@ export default function AdminScreen() {
   const [silhouette, setSilhouette] = useState<SilhouetteResponse | null>(null);
   const [llmTelemetry, setLlmTelemetry] = useState<LlmTelemetryResponse | null>(null);
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
+  const [pairScoreLoading, setPairScoreLoading] = useState(false);
+  const [pairScore, setPairScore] = useState<AdminPairScoreResponse | null>(null);
+  const [pairTargetInput, setPairTargetInput] = useState('');
+  const [pairTargetId, setPairTargetId] = useState<string | null>(null);
+  const [pairAutoRefresh, setPairAutoRefresh] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
 
   const borderColor = useThemeColor(
@@ -66,6 +80,10 @@ export default function AdminScreen() {
   const muted = useThemeColor(
     { light: 'rgba(0, 0, 0, 0.6)', dark: 'rgba(255, 255, 255, 0.6)' },
     'text'
+  );
+  const inputBg = useThemeColor(
+    { light: 'rgba(15, 23, 42, 0.04)', dark: 'rgba(255, 255, 255, 0.05)' },
+    'background'
   );
 
   const sortedSignals = useMemo(
@@ -129,19 +147,48 @@ export default function AdminScreen() {
     }
   }, [account, token]);
 
+  const refreshPairScore = useCallback(
+    async (targetOverride?: string | null) => {
+      if (!account || !token) return;
+      setPairScoreLoading(true);
+      try {
+        const target = targetOverride !== undefined ? targetOverride : pairTargetId;
+        const next = await fetchAdminPairScore(account.id, token, target, 12);
+        setPairScore(next);
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : 'Failed to load pair score snapshot');
+      } finally {
+        setPairScoreLoading(false);
+      }
+    },
+    [account, pairTargetId, token]
+  );
+
   useEffect(() => {
     if (!account || !token) {
       setSignalRecords([]);
       setSilhouette(null);
       setLlmTelemetry(null);
       setFacecards([]);
+      setPairScore(null);
       return;
     }
     void refreshSignals();
     void refreshSilhouette();
     void refreshLlmTelemetry();
     void refreshFacecards();
-  }, [account, refreshFacecards, refreshLlmTelemetry, refreshSignals, refreshSilhouette, token]);
+    void refreshPairScore(pairTargetId);
+  }, [account, pairTargetId, refreshFacecards, refreshLlmTelemetry, refreshPairScore, refreshSignals, refreshSilhouette, token]);
+
+  useEffect(() => {
+    if (!account || !token || !pairAutoRefresh) {
+      return;
+    }
+    const timer = setInterval(() => {
+      void refreshPairScore();
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [account, pairAutoRefresh, refreshPairScore, token]);
 
   const summonDebugPrivatePrompt = useCallback(async () => {
     if (!account || !token) return;
@@ -160,6 +207,19 @@ export default function AdminScreen() {
       setDebugPromptLoading(false);
     }
   }, [account, token]);
+
+  const applyPairTarget = useCallback(() => {
+    const trimmed = pairTargetInput.trim();
+    const nextTarget = trimmed.length === 0 ? null : trimmed;
+    setPairTargetId(nextTarget);
+    void refreshPairScore(nextTarget);
+  }, [pairTargetInput, refreshPairScore]);
+
+  const clearPairTarget = useCallback(() => {
+    setPairTargetInput('');
+    setPairTargetId(null);
+    void refreshPairScore(null);
+  }, [refreshPairScore]);
 
   return (
     <ThemedView style={styles.container}>
@@ -324,9 +384,6 @@ export default function AdminScreen() {
                       </ThemedText>
                     </View>
                   ) : null}
-                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                    {JSON.stringify(silhouette)}
-                  </ThemedText>
                 </>
               )}
             </View>
@@ -404,6 +461,153 @@ export default function AdminScreen() {
                 Open full-screen tooling (registry, candidates, promote/reject).
               </ThemedText>
             </Pressable>
+
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <View style={styles.cardHeader}>
+                <ThemedText type="defaultSemiBold">Live: Pair score inspector</ThemedText>
+                <Pressable
+                  onPress={() => void refreshPairScore()}
+                  disabled={pairScoreLoading || debugPromptLoading}
+                >
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {pairScoreLoading ? 'Refreshing...' : 'Refresh'}
+                  </ThemedText>
+                </Pressable>
+              </View>
+
+              <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                {`Auto-refresh=${pairAutoRefresh ? 'on' : 'off'} (4s) ${
+                  pairTargetId ? `target=${pairTargetId}` : 'target=none'
+                }`}
+              </ThemedText>
+
+              <View style={styles.inputRow}>
+                <TextInput
+                  value={pairTargetInput}
+                  onChangeText={setPairTargetInput}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder="Target account id (e.g. 123-a)"
+                  placeholderTextColor={muted}
+                  style={[
+                    styles.targetInput,
+                    {
+                      borderColor: cardBorder,
+                      color: muted,
+                      backgroundColor: inputBg,
+                    },
+                  ]}
+                />
+                <Pressable
+                  onPress={applyPairTarget}
+                  style={({ pressed }) => [styles.smallButton, { opacity: pressed ? 0.7 : 1 }]}
+                >
+                  <ThemedText style={styles.signalItemText}>Apply</ThemedText>
+                </Pressable>
+                <Pressable
+                  onPress={clearPairTarget}
+                  style={({ pressed }) => [styles.smallButton, { opacity: pressed ? 0.7 : 1 }]}
+                >
+                  <ThemedText style={styles.signalItemText}>Clear</ThemedText>
+                </Pressable>
+              </View>
+
+              <Pressable
+                onPress={() => setPairAutoRefresh((prev) => !prev)}
+                style={({ pressed }) => [styles.smallButton, { opacity: pressed ? 0.7 : 1 }]}
+              >
+                <ThemedText style={styles.signalItemText}>
+                  {pairAutoRefresh ? 'Disable auto-refresh' : 'Enable auto-refresh'}
+                </ThemedText>
+              </Pressable>
+
+              {pairScoreLoading && !pairScore ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator />
+                  <ThemedText>Loading pair-score snapshot...</ThemedText>
+                </View>
+              ) : !pairScore ? (
+                <ThemedText style={[styles.mutedText, { color: muted }]}>No pair-score snapshot loaded.</ThemedText>
+              ) : (
+                <>
+                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                    {`viewer_mode=${pairScore.viewerMode} threshold_match=${pairScore.viewerThresholds.match.toFixed(
+                      2
+                    )} threshold_auto=${pairScore.viewerThresholds.autoPass.toFixed(2)} generatedAt=${
+                      pairScore.generatedAt
+                    }`}
+                  </ThemedText>
+                  {(pairScore.topCandidates ?? []).slice(0, 8).map((candidate) => {
+                    const debug = candidate.scorerDebug;
+                    const blend = Number.isFinite(debug?.profileSignalBlend)
+                      ? (debug?.profileSignalBlend as number)
+                      : null;
+                    const align = Number.isFinite(debug?.signalAlignment)
+                      ? (debug?.signalAlignment as number)
+                      : null;
+                    const fit = Number.isFinite(debug?.filterPreferenceFit)
+                      ? (debug?.filterPreferenceFit as number)
+                      : null;
+                    return (
+                      <View key={candidate.account.id} style={styles.signalItem}>
+                        <ThemedText style={styles.signalItemToken}>
+                          {candidate.account.name ?? candidate.account.id}
+                        </ThemedText>
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`${candidate.account.id} score=${candidate.score.toFixed(2)} delta_match=${fmtDelta(
+                            candidate.deltaToMatchThreshold
+                          )} delta_auto=${fmtDelta(candidate.deltaToAutoPassThreshold)}`}
+                        </ThemedText>
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`fit=${fit == null ? 'n/a' : fit.toFixed(3)} align=${
+                            align == null ? 'n/a' : align.toFixed(3)
+                          } blend=${blend == null ? 'n/a' : blend.toFixed(3)}`}
+                        </ThemedText>
+                      </View>
+                    );
+                  })}
+                  {(pairScore.topCandidates ?? []).length === 0 ? (
+                    <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                      No ranked candidates found.
+                    </ThemedText>
+                  ) : null}
+                  {pairScore.pair ? (
+                    <View style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>
+                        {`pair target=${pairScore.pair.targetAccountId} mode=${pairScore.pair.targetMode}`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`viewer->target score=${
+                          Number.isFinite(pairScore.pair.viewerToTarget?.score)
+                            ? (pairScore.pair.viewerToTarget.score as number).toFixed(2)
+                            : 'n/a'
+                        } delta_match=${fmtDelta(pairScore.pair.viewerToTarget?.deltaToMatchThreshold)} delta_auto=${fmtDelta(
+                          pairScore.pair.viewerToTarget?.deltaToAutoPassThreshold
+                        )}`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`target->viewer score=${
+                          Number.isFinite(pairScore.pair.targetToViewer?.score)
+                            ? (pairScore.pair.targetToViewer.score as number).toFixed(2)
+                            : 'n/a'
+                        } delta_match=${fmtDelta(pairScore.pair.targetToViewer?.deltaToMatchThreshold)} delta_auto=${fmtDelta(
+                          pairScore.pair.targetToViewer?.deltaToAutoPassThreshold
+                        )}`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`mutual_min=${
+                          Number.isFinite(pairScore.pair.mutualMinScore)
+                            ? (pairScore.pair.mutualMinScore as number).toFixed(2)
+                            : 'n/a'
+                        } mutual_delta=${fmtDelta(pairScore.pair.mutualDeltaToThreshold)} pass_match=${
+                          pairScore.pair.bothMeetMatchThreshold ? 'yes' : 'no'
+                        } pass_auto=${pairScore.pair.bothMeetAutoPassThreshold ? 'yes' : 'no'}`}
+                      </ThemedText>
+                    </View>
+                  ) : null}
+                </>
+              )}
+            </View>
 
             <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
               <View style={styles.cardHeader}>
@@ -578,5 +782,26 @@ const styles = StyleSheet.create({
   signalItemToken: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  targetInput: {
+    flex: 1,
+    minHeight: 40,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    fontSize: 13,
+  },
+  smallButton: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.45)',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    alignSelf: 'flex-start',
   },
 });

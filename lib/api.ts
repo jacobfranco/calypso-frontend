@@ -343,6 +343,53 @@ export type LlmTelemetryResponse = {
   events: LlmTelemetryEvent[];
 };
 
+export type AdminPairThresholds = {
+  match: number;
+  autoPass: number;
+};
+
+export type AdminPairTopCandidate = {
+  account: Account;
+  score: number;
+  computedAt: number;
+  deltaToMatchThreshold: number;
+  deltaToAutoPassThreshold: number;
+  scorerDebug?: MatchScorerDebug;
+};
+
+export type AdminPairDirectionalScore = {
+  present: boolean;
+  account?: Account;
+  score?: number;
+  computedAt?: number;
+  deltaToMatchThreshold?: number;
+  deltaToAutoPassThreshold?: number;
+  scorerDebug?: MatchScorerDebug;
+};
+
+export type AdminPairSnapshot = {
+  targetAccountId: string;
+  viewerMode: string;
+  targetMode: string;
+  viewerThresholds: AdminPairThresholds;
+  targetThresholds: AdminPairThresholds;
+  viewerToTarget: AdminPairDirectionalScore;
+  targetToViewer: AdminPairDirectionalScore;
+  mutualMinScore?: number;
+  mutualDeltaToThreshold?: number;
+  bothMeetMatchThreshold: boolean;
+  bothMeetAutoPassThreshold: boolean;
+};
+
+export type AdminPairScoreResponse = {
+  generatedAt: number;
+  viewerId: string;
+  viewerMode: string;
+  viewerThresholds: AdminPairThresholds;
+  topCandidates: AdminPairTopCandidate[];
+  pair?: AdminPairSnapshot | null;
+};
+
 export type SignalConceptCandidateAction = 'create' | 'map' | 'reject' | 'block' | 'unblock';
 
 export type TokenResponse = {
@@ -1312,6 +1359,34 @@ export async function fetchAdminLlmTelemetry(
   }
   if (!('totals' in json) || !('events' in json) || !Array.isArray(json.events)) {
     throw new Error('Unexpected response from /api/accounts/{id}/admin/llm-telemetry');
+  }
+  return json;
+}
+
+export async function fetchAdminPairScore(
+  accountId: string,
+  token: string,
+  targetAccountId?: string | null,
+  limit = 12
+): Promise<AdminPairScoreResponse> {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  const target = targetAccountId?.trim();
+  if (target) {
+    params.set('targetId', target);
+  }
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/admin/pair-score?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as AdminPairScoreResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('viewerId' in json) || !('topCandidates' in json) || !Array.isArray(json.topCandidates)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/admin/pair-score');
   }
   return json;
 }
