@@ -198,6 +198,7 @@ export type SignalRecord = {
   token: string;
   rawToken?: string;
   canonicalToken?: string;
+  category?: string;
   source?: string;
   sourceId?: string;
   firstSeen?: number;
@@ -216,6 +217,7 @@ export type SignalsResponse = {
 
 export type SignalConcept = {
   concept: string;
+  category?: string;
   aliases: string[];
   parents: Record<string, number>;
 };
@@ -240,6 +242,7 @@ export type SignalConceptCandidate = {
   }>;
   suggestedCanonical?: string;
   suggestionScore?: number;
+  suggestedCategory?: string;
   autoReady?: boolean;
   blockedAt?: number;
 };
@@ -266,46 +269,23 @@ export type SignalDisambiguationCandidatesResponse = {
   candidates: SignalDisambiguationCandidate[];
 };
 
-export type SilhouetteFacet = {
-  key: string;
-  summary: string;
-  confidence: number;
-  updatedAt?: number;
-  evidenceIds?: string[];
-};
-
-export type SilhouetteAnchor = {
-  label: string;
+export type SilhouetteClaim = {
+  id?: string;
+  facet?: string;
+  text: string;
   kind?: string;
-  meaning: string;
-  confidence: number;
-  updatedAt?: number;
-  evidenceIds?: string[];
-};
-
-export type SilhouetteMetaObservation = {
-  key: string;
-  summary: string;
-  confidence: number;
-  updatedAt?: number;
-  evidenceIds?: string[];
-};
-
-export type SilhouetteEvidence = {
-  id: string;
+  polarity?: number;
+  confidence?: number;
   source?: string;
   sourceId?: string;
   promptId?: string;
-  excerpt?: string;
   createdAt?: number;
 };
 
-export type SilhouetteHistory = {
-  eventId: string;
-  source?: string;
-  sourceId?: string;
-  summary?: string;
-  opCount?: number;
+export type SilhouetteSummaryCache = {
+  rerankerShort?: string;
+  adminLong?: string;
+  generatedFromVersion?: number;
   updatedAt?: number;
 };
 
@@ -313,13 +293,54 @@ export type SilhouetteResponse = {
   accountId: number;
   version?: number;
   maturity?: 'empty' | 'sparse' | 'mature' | string;
-  story?: string;
-  facets?: SilhouetteFacet[];
-  anchors?: SilhouetteAnchor[];
-  metaObservations?: SilhouetteMetaObservation[];
-  evidence?: SilhouetteEvidence[];
-  history?: SilhouetteHistory[];
+  claims?: SilhouetteClaim[];
+  summaryCache?: SilhouetteSummaryCache;
   updatedAt?: number;
+};
+
+export type LlmTelemetryTotals = {
+  calls: number;
+  successes: number;
+  failures: number;
+  avgLatencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+export type LlmTelemetryStageSummary = {
+  stageKey: string;
+  stage: string;
+  surface: string;
+  calls: number;
+  successes: number;
+  failures: number;
+  avgLatencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+export type LlmTelemetryEvent = {
+  createdAt: number;
+  stage: string;
+  surface: string;
+  promptId?: string;
+  model: string;
+  success: boolean;
+  latencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  maxOutputTokens?: number;
+  error?: string;
+};
+
+export type LlmTelemetryResponse = {
+  generatedAt: number;
+  totals: LlmTelemetryTotals;
+  byStage: LlmTelemetryStageSummary[];
+  events: LlmTelemetryEvent[];
 };
 
 export type SignalConceptCandidateAction = 'create' | 'map' | 'reject' | 'block' | 'unblock';
@@ -1271,17 +1292,43 @@ export async function fetchAdminSilhouette(
   return json;
 }
 
+export async function fetchAdminLlmTelemetry(
+  accountId: string,
+  token: string,
+  limit = 120
+): Promise<LlmTelemetryResponse> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/admin/llm-telemetry?limit=${limit}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  const json = (await res.json()) as LlmTelemetryResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('totals' in json) || !('events' in json) || !Array.isArray(json.events)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/admin/llm-telemetry');
+  }
+  return json;
+}
+
 export async function actOnSignalConceptCandidate(
   accountId: string,
   token: string,
   action: SignalConceptCandidateAction,
   rawToken: string,
-  canonicalToken?: string
+  canonicalToken?: string,
+  category?: string
 ): Promise<{
   action?: string;
   changed: boolean;
   rawToken?: string;
   canonicalToken?: string;
+  category?: string;
   migratedStoredAccounts?: number;
   replayedObservedAccounts?: number;
   replayedContextualOwners?: number;
@@ -1293,7 +1340,7 @@ export async function actOnSignalConceptCandidate(
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ action, rawToken, canonicalToken }),
+    body: JSON.stringify({ action, rawToken, canonicalToken, category }),
   });
 
   const json = (await res.json()) as
@@ -1302,6 +1349,7 @@ export async function actOnSignalConceptCandidate(
         changed?: boolean;
         rawToken?: string;
         canonicalToken?: string;
+        category?: string;
         migratedStoredAccounts?: number;
         replayedObservedAccounts?: number;
         replayedContextualOwners?: number;
@@ -1316,6 +1364,7 @@ export async function actOnSignalConceptCandidate(
     changed: Boolean('changed' in json ? json.changed : false),
     rawToken: 'rawToken' in json ? json.rawToken : undefined,
     canonicalToken: 'canonicalToken' in json ? json.canonicalToken : undefined,
+    category: 'category' in json ? json.category : undefined,
     migratedStoredAccounts:
       'migratedStoredAccounts' in json ? json.migratedStoredAccounts : undefined,
     replayedObservedAccounts:
@@ -1330,17 +1379,19 @@ export async function promoteSignalConceptCandidate(
   accountId: string,
   token: string,
   rawToken: string,
-  canonicalToken: string
+  canonicalToken: string,
+  category?: string
 ): Promise<{
   changed: boolean;
   rawToken?: string;
   canonicalToken?: string;
+  category?: string;
   migratedStoredAccounts?: number;
   replayedObservedAccounts?: number;
   replayedContextualOwners?: number;
   observedAccountIds?: number[];
 }> {
-  return actOnSignalConceptCandidate(accountId, token, 'map', rawToken, canonicalToken);
+  return actOnSignalConceptCandidate(accountId, token, 'map', rawToken, canonicalToken, category);
 }
 
 export async function rejectSignalConceptCandidate(

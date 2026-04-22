@@ -12,9 +12,11 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
+  fetchAdminLlmTelemetry,
   fetchAdminSilhouette,
   fetchFacecards,
   fetchSignals,
+  LlmTelemetryResponse,
   MatchCard,
   postDebugSummonNextPrivatePrompt,
   SignalRecord,
@@ -41,9 +43,11 @@ export default function AdminScreen() {
   const [debugPromptLoading, setDebugPromptLoading] = useState(false);
   const [signalsLoading, setSignalsLoading] = useState(false);
   const [silhouetteLoading, setSilhouetteLoading] = useState(false);
+  const [llmTelemetryLoading, setLlmTelemetryLoading] = useState(false);
   const [facecardsLoading, setFacecardsLoading] = useState(false);
   const [signalRecords, setSignalRecords] = useState<SignalRecord[]>([]);
   const [silhouette, setSilhouette] = useState<SilhouetteResponse | null>(null);
+  const [llmTelemetry, setLlmTelemetry] = useState<LlmTelemetryResponse | null>(null);
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -71,14 +75,6 @@ export default function AdminScreen() {
   const sortedFacecards = useMemo(
     () => facecards.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
     [facecards]
-  );
-  const silhouettePartnerCompAnchors = useMemo(
-    () => (silhouette?.anchors ?? []).filter((anchor) => (anchor.kind ?? '').toLowerCase() === 'partner_comp'),
-    [silhouette]
-  );
-  const silhouetteGeneralAnchors = useMemo(
-    () => (silhouette?.anchors ?? []).filter((anchor) => (anchor.kind ?? '').toLowerCase() !== 'partner_comp'),
-    [silhouette]
   );
 
   const refreshSignals = useCallback(async () => {
@@ -120,17 +116,32 @@ export default function AdminScreen() {
     }
   }, [account, token]);
 
+  const refreshLlmTelemetry = useCallback(async () => {
+    if (!account || !token) return;
+    setLlmTelemetryLoading(true);
+    try {
+      const next = await fetchAdminLlmTelemetry(account.id, token, 120);
+      setLlmTelemetry(next);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to load LLM telemetry');
+    } finally {
+      setLlmTelemetryLoading(false);
+    }
+  }, [account, token]);
+
   useEffect(() => {
     if (!account || !token) {
       setSignalRecords([]);
       setSilhouette(null);
+      setLlmTelemetry(null);
       setFacecards([]);
       return;
     }
     void refreshSignals();
     void refreshSilhouette();
+    void refreshLlmTelemetry();
     void refreshFacecards();
-  }, [account, refreshFacecards, refreshSignals, refreshSilhouette, token]);
+  }, [account, refreshFacecards, refreshLlmTelemetry, refreshSignals, refreshSilhouette, token]);
 
   const summonDebugPrivatePrompt = useCallback(async () => {
     if (!account || !token) return;
@@ -229,6 +240,11 @@ export default function AdminScreen() {
                     <ThemedText style={[styles.signalItemText, { color: muted }]}>
                       {`intent=${(record.intent ?? 'self').toLowerCase()} valence=${fmtSigned(record.valence ?? 1)}`}
                     </ThemedText>
+                    {record.category ? (
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`category=${record.category}`}
+                      </ThemedText>
+                    ) : null}
                     <ThemedText style={[styles.signalItemText, { color: muted }]}>
                       {`${record.source ?? 'unknown'} | x${record.count ?? 1}`}
                     </ThemedText>
@@ -264,55 +280,110 @@ export default function AdminScreen() {
                       silhouette.updatedAt ?? 0
                     }`}
                   </ThemedText>
-                  {silhouette.story ? (
+                  {silhouette.summaryCache?.rerankerShort ? (
                     <View style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>story</ThemedText>
+                      <ThemedText style={styles.signalItemToken}>reranker_short</ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {silhouette.story}
+                        {silhouette.summaryCache.rerankerShort}
                       </ThemedText>
                     </View>
                   ) : null}
-                  {(silhouette.facets ?? []).slice(0, 8).map((facet) => (
-                    <View key={`facet-${facet.key}`} style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>{facet.key}</ThemedText>
+                  {silhouette.summaryCache?.adminLong ? (
+                    <View style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>admin_long</ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`${facet.summary} (conf=${(facet.confidence ?? 0).toFixed(2)})`}
+                        {silhouette.summaryCache.adminLong}
                       </ThemedText>
                     </View>
-                  ))}
-                  {silhouettePartnerCompAnchors.length > 0 ? (
-                    <ThemedText style={[styles.signalItemText, { color: muted }]}>partner_comps</ThemedText>
                   ) : null}
-                  {silhouettePartnerCompAnchors.slice(0, 6).map((anchor, idx) => (
-                    <View key={`anchor-${anchor.label}-${idx}`} style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>{anchor.label}</ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`${anchor.meaning} (conf=${(anchor.confidence ?? 0).toFixed(2)})`}
+                  {(silhouette.claims ?? []).slice(0, 12).map((claim, idx) => (
+                    <View key={`claim-${claim.id ?? idx}`} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>
+                        {claim.facet ?? 'general'}
                       </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`${claim.text} (conf=${(claim.confidence ?? 0).toFixed(2)})`}
+                      </ThemedText>
+                      {claim.kind ? (
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`kind=${claim.kind}`}
+                        </ThemedText>
+                      ) : null}
+                      {claim.source ? (
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`${claim.source}${claim.promptId ? ` | ${claim.promptId}` : ''}`}
+                        </ThemedText>
+                      ) : null}
                     </View>
                   ))}
-                  {silhouetteGeneralAnchors.slice(0, 6).map((anchor, idx) => (
-                    <View key={`anchor-general-${anchor.label}-${idx}`} style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>{anchor.label}</ThemedText>
+                  {(silhouette.claims ?? []).length === 0 ? (
+                    <View style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>claims</ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`${anchor.meaning} (conf=${(anchor.confidence ?? 0).toFixed(2)})`}
+                        none
                       </ThemedText>
                     </View>
-                  ))}
-                  {(silhouette.metaObservations ?? []).slice(0, 6).map((meta) => (
-                    <View key={`meta-${meta.key}`} style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>{meta.key}</ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`${meta.summary} (conf=${(meta.confidence ?? 0).toFixed(2)})`}
-                      </ThemedText>
-                    </View>
-                  ))}
-                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                    {`evidence=${(silhouette.evidence ?? []).length} history=${(silhouette.history ?? []).length}`}
-                  </ThemedText>
+                  ) : null}
                   <ThemedText style={[styles.signalItemText, { color: muted }]}>
                     {JSON.stringify(silhouette)}
                   </ThemedText>
+                </>
+              )}
+            </View>
+
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <View style={styles.cardHeader}>
+                <ThemedText type="defaultSemiBold">Temp: LLM telemetry (read-only)</ThemedText>
+                <Pressable
+                  onPress={refreshLlmTelemetry}
+                  disabled={llmTelemetryLoading || signalsLoading || facecardsLoading || debugPromptLoading}
+                >
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {llmTelemetryLoading ? 'Refreshing...' : 'Refresh'}
+                  </ThemedText>
+                </Pressable>
+              </View>
+
+              {llmTelemetryLoading ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator />
+                  <ThemedText>Loading telemetry...</ThemedText>
+                </View>
+              ) : !llmTelemetry ? (
+                <ThemedText style={[styles.mutedText, { color: muted }]}>No telemetry loaded.</ThemedText>
+              ) : (
+                <>
+                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                    {`calls=${llmTelemetry.totals?.calls ?? 0} success=${llmTelemetry.totals?.successes ?? 0} fail=${
+                      llmTelemetry.totals?.failures ?? 0
+                    } total_tokens=${llmTelemetry.totals?.totalTokens ?? 0}`}
+                  </ThemedText>
+                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                    {`input=${llmTelemetry.totals?.inputTokens ?? 0} output=${
+                      llmTelemetry.totals?.outputTokens ?? 0
+                    } avg_latency_ms=${(llmTelemetry.totals?.avgLatencyMs ?? 0).toFixed(1)}`}
+                  </ThemedText>
+                  {(llmTelemetry.byStage ?? []).slice(0, 8).map((row) => (
+                    <View key={`${row.stageKey}`} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>{`${row.stage}/${row.surface}`}</ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`calls=${row.calls} success=${row.successes} fail=${row.failures} tokens=${row.totalTokens}`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`in=${row.inputTokens} out=${row.outputTokens} avg_ms=${row.avgLatencyMs.toFixed(1)}`}
+                      </ThemedText>
+                    </View>
+                  ))}
+                  {(llmTelemetry.events ?? []).slice(0, 12).map((event, idx) => (
+                    <View key={`${event.createdAt}-${event.stage}-${idx}`} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>
+                        {`${event.stage}/${event.surface} ${event.success ? 'ok' : 'fail'}`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`model=${event.model} tok=${event.totalTokens} in=${event.inputTokens} out=${event.outputTokens} ms=${event.latencyMs}`}
+                      </ThemedText>
+                    </View>
+                  ))}
                 </>
               )}
             </View>

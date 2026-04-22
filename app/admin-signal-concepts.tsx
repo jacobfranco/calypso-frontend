@@ -78,6 +78,9 @@ export default function AdminSignalConceptsScreen() {
       if (concept.aliases.some((alias) => alias.toLowerCase().includes(normalizedQuery))) {
         return true;
       }
+      if ((concept.category ?? '').toLowerCase().includes(normalizedQuery)) {
+        return true;
+      }
       return false;
     });
   }, [concepts, normalizedQuery]);
@@ -93,6 +96,9 @@ export default function AdminSignalConceptsScreen() {
       if ((candidate.suggestedCanonical ?? '').toLowerCase().includes(normalizedQuery)) {
         return true;
       }
+      if ((candidate.suggestedCategory ?? '').toLowerCase().includes(normalizedQuery)) {
+        return true;
+      }
       return false;
     });
   }, [candidates, normalizedQuery]);
@@ -106,6 +112,9 @@ export default function AdminSignalConceptsScreen() {
         return true;
       }
       if ((candidate.suggestedCanonical ?? '').toLowerCase().includes(normalizedQuery)) {
+        return true;
+      }
+      if ((candidate.suggestedCategory ?? '').toLowerCase().includes(normalizedQuery)) {
         return true;
       }
       return false;
@@ -199,6 +208,8 @@ export default function AdminSignalConceptsScreen() {
   const createCanonicalCandidate = useCallback(
     async (rawToken: string) => {
       if (!account || !token) return;
+      const candidate = candidates.find((entry) => entry.rawToken === rawToken);
+      const category = candidate?.suggestedCategory;
       const confirmed = await confirmAction(
         'Create Canonical Concept?',
         `Create a new canonical concept for "${rawToken}" and retroactively backfill affected users?`
@@ -209,7 +220,7 @@ export default function AdminSignalConceptsScreen() {
       setActionLoading(true);
       setMessage(null);
       try {
-        const result = await actOnSignalConceptCandidate(account.id, token, 'create', rawToken, rawToken);
+        const result = await actOnSignalConceptCandidate(account.id, token, 'create', rawToken, rawToken, category);
         setCanonicalDraftByRaw((prev) => {
           const next = { ...prev };
           delete next[rawToken];
@@ -222,7 +233,7 @@ export default function AdminSignalConceptsScreen() {
             result.migratedStoredAccounts ?? 0
           } replayObserved=${result.replayedObservedAccounts ?? 0} replayOwners=${
             result.replayedContextualOwners ?? 0
-          } observedIds=${observedIds || 'none'}`
+          } category=${result.category ?? category ?? 'other'} observedIds=${observedIds || 'none'}`
         );
       } catch (error) {
         setMessage(error instanceof Error ? error.message : 'Failed to create canonical concept');
@@ -230,7 +241,7 @@ export default function AdminSignalConceptsScreen() {
         setActionLoading(false);
       }
     },
-    [account, token, confirmAction, refresh]
+    [account, token, candidates, confirmAction, refresh]
   );
 
   const openMapPicker = useCallback(
@@ -275,6 +286,9 @@ export default function AdminSignalConceptsScreen() {
         setMessage(`"${canonical}" is not an existing canonical concept. Use Create Canonical instead.`);
         return false;
       }
+      const candidate = candidates.find((entry) => entry.rawToken === rawToken);
+      const canonicalConcept = concepts.find((entry) => entry.concept.trim().toLowerCase() === canonical);
+      const category = canonicalConcept?.category ?? candidate?.suggestedCategory;
       const confirmed = await confirmAction(
         'Map Candidate to Canonical?',
         `Map "${rawToken}" to existing canonical "${canonical}" and backfill affected users?`
@@ -285,7 +299,7 @@ export default function AdminSignalConceptsScreen() {
       setActionLoading(true);
       setMessage(null);
       try {
-        const result = await actOnSignalConceptCandidate(account.id, token, 'map', rawToken, canonical);
+        const result = await actOnSignalConceptCandidate(account.id, token, 'map', rawToken, canonical, category);
         setCanonicalDraftByRaw((prev) => {
           const next = { ...prev };
           delete next[rawToken];
@@ -298,7 +312,7 @@ export default function AdminSignalConceptsScreen() {
             result.migratedStoredAccounts ?? 0
           } replayObserved=${result.replayedObservedAccounts ?? 0} replayOwners=${
             result.replayedContextualOwners ?? 0
-          } observedIds=${observedIds || 'none'}`
+          } category=${result.category ?? category ?? 'other'} observedIds=${observedIds || 'none'}`
         );
         return true;
       } catch (error) {
@@ -308,7 +322,7 @@ export default function AdminSignalConceptsScreen() {
         setActionLoading(false);
       }
     },
-    [account, token, canonicalDraftByRaw, canonicalConceptSet, confirmAction, refresh]
+    [account, token, canonicalDraftByRaw, canonicalConceptSet, candidates, concepts, confirmAction, refresh]
   );
 
   const jumpToCanonicalList = useCallback(() => {
@@ -500,6 +514,11 @@ export default function AdminSignalConceptsScreen() {
                   <ThemedText style={[styles.mutedText, { color: muted }]}>
                     {`seen=${candidate.seenCount} source=${candidate.lastSource ?? 'unknown'}`}
                   </ThemedText>
+                  {candidate.suggestedCategory ? (
+                    <ThemedText style={[styles.mutedText, { color: muted }]}>
+                      {`category=${candidate.suggestedCategory}`}
+                    </ThemedText>
+                  ) : null}
                   {candidate.suggestedCanonical ? (
                     <ThemedText style={[styles.mutedText, { color: muted }]}>
                       {`suggested=${candidate.suggestedCanonical} score=${
@@ -594,6 +613,11 @@ export default function AdminSignalConceptsScreen() {
                     candidate.blockedAt ? new Date(candidate.blockedAt).toLocaleString() : 'unknown'
                   }`}
                 </ThemedText>
+                {candidate.suggestedCategory ? (
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {`category=${candidate.suggestedCategory}`}
+                  </ThemedText>
+                ) : null}
                 {candidate.suggestedCanonical ? (
                   <ThemedText style={[styles.mutedText, { color: muted }]}>
                     {`suggested=${candidate.suggestedCanonical} score=${
@@ -671,7 +695,9 @@ export default function AdminSignalConceptsScreen() {
               <View key={concept.concept} style={styles.item}>
                 <ThemedText style={styles.itemToken}>{concept.concept}</ThemedText>
                 <ThemedText style={[styles.mutedText, { color: muted }]}>
-                  {`aliases=${concept.aliases.length} parents=${Object.keys(concept.parents ?? {}).length}`}
+                  {`category=${concept.category ?? 'other'} aliases=${concept.aliases.length} parents=${
+                    Object.keys(concept.parents ?? {}).length
+                  }`}
                 </ThemedText>
                 {concept.aliases.length > 0 ? (
                   <ThemedText style={[styles.mutedText, { color: muted }]}>
@@ -690,6 +716,11 @@ export default function AdminSignalConceptsScreen() {
             <ThemedText style={[styles.mutedText, { color: muted }]}>
               {mapPickerRawToken ? `raw=${mapPickerRawToken}` : 'Pick a canonical concept to map to.'}
             </ThemedText>
+            {mapPickerCandidate?.suggestedCategory ? (
+              <ThemedText style={[styles.mutedText, { color: muted }]}>
+                {`suggested_category=${mapPickerCandidate.suggestedCategory}`}
+              </ThemedText>
+            ) : null}
             <TextInput
               value={mapPickerSearch}
               onChangeText={setMapPickerSearch}
@@ -743,6 +774,11 @@ export default function AdminSignalConceptsScreen() {
                       ]}
                     >
                       <ThemedText style={styles.itemToken}>{concept.concept}</ThemedText>
+                      {concept.category ? (
+                        <ThemedText style={[styles.mutedText, { color: muted }]}>
+                          {`category=${concept.category}`}
+                        </ThemedText>
+                      ) : null}
                       {concept.aliases.length > 0 ? (
                         <ThemedText style={[styles.mutedText, { color: muted }]}>
                           {`aka: ${concept.aliases.slice(0, 3).join(', ')}`}
