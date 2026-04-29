@@ -137,17 +137,46 @@ function pickActiveAgentPrompt(
 function splitPromptIntoParts(promptText: string): string[] {
   const trimmed = promptText?.trim() ?? '';
   if (!trimmed) return [];
-  const withQuestions = trimmed
-    .split(/(?<=\?)\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
+  const withQuestions = mergeTrailingWhyFragments(
+    trimmed
+      .split(/(?<=\?)\s+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+  );
   if (withQuestions.length > 1) return withQuestions;
-  const sentences = trimmed
-    .split(/(?<=\.)\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
+  const sentences = mergeTrailingWhyFragments(
+    trimmed
+      .split(/(?<=\.)\s+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+  );
   if (sentences.length > 1) return sentences;
-  return [trimmed];
+  return withQuestions.length ? withQuestions : [trimmed];
+}
+
+function mergeTrailingWhyFragments(parts: string[]): string[] {
+  if (!parts.length) return [];
+  const merged: string[] = [];
+  parts.forEach((part) => {
+    const trimmed = part.trim();
+    if (!trimmed) return;
+    if (isStandaloneWhyFragment(trimmed) && merged.length > 0) {
+      merged[merged.length - 1] = `${merged[merged.length - 1]} ${trimmed}`.trim();
+      return;
+    }
+    merged.push(trimmed);
+  });
+  return merged;
+}
+
+function isStandaloneWhyFragment(part: string): boolean {
+  const normalized = part.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!normalized.startsWith('why')) return false;
+  const words = normalized
+    .replace(/[^a-z0-9'\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.length > 0 && words.length <= 4;
 }
 
 function toConversationLines(messages: PrivatePromptChatMessage[]): string[] {
@@ -571,19 +600,22 @@ export default function HomeScreen() {
               turnPayload
             );
       const nextMessages = [...messagesWithUserTurn];
-      if (turn.agentMessage?.trim()) {
-        nextMessages.push({ role: 'agent', text: turn.agentMessage.trim() });
+      const agentTurnText = turn.agentMessage?.trim() ?? '';
+      const hasAgentTurnText = agentTurnText.length > 0;
+      if (hasAgentTurnText) {
+        nextMessages.push({ role: 'agent', text: agentTurnText });
       }
       if (turn.needsMoreDetail) {
         setPrivatePromptReadyToSubmit(false);
       } else {
         if (privatePromptPartIndex < privatePromptParts.length - 1) {
+          setPrivatePromptReadyToSubmit(false);
           const nextPartIndex = privatePromptPartIndex + 1;
           setPrivatePromptPartIndex(nextPartIndex);
           nextMessages.push({ role: 'agent', text: privatePromptParts[nextPartIndex] });
         } else {
           setPrivatePromptReadyToSubmit(true);
-          if (!privatePromptReadyToSubmit) {
+          if (!privatePromptReadyToSubmit && !hasAgentTurnText) {
             nextMessages.push({
               role: 'agent',
               text: "Thanks, that's helpful. You can add more detail, or tap Submit when you're ready.",

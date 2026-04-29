@@ -46,6 +46,25 @@ function fmtDelta(value: number | null | undefined): string {
   return (value as number) >= 0 ? `+${rounded}` : rounded;
 }
 
+type SignalIntentGroup = 'seeking' | 'self' | 'both' | 'meta' | 'other';
+
+const SIGNAL_GROUP_ORDER: Array<{ key: SignalIntentGroup; label: string }> = [
+  { key: 'seeking', label: 'Seeking' },
+  { key: 'self', label: 'Self' },
+  { key: 'both', label: 'Both' },
+  { key: 'meta', label: 'Meta' },
+  { key: 'other', label: 'Other' },
+];
+
+function signalIntentGroup(intent?: string): SignalIntentGroup {
+  const normalized = intent?.trim().toLowerCase();
+  if (normalized === 'seeking') return 'seeking';
+  if (normalized === 'self') return 'self';
+  if (normalized === 'both') return 'both';
+  if (normalized === 'meta') return 'meta';
+  return 'other';
+}
+
 export default function AdminScreen() {
   const router = useRouter();
   const { account, token } = useAuth();
@@ -90,6 +109,19 @@ export default function AdminScreen() {
     () => signalRecords.slice().sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0)),
     [signalRecords]
   );
+  const groupedSignals = useMemo(() => {
+    const groups: Record<SignalIntentGroup, SignalRecord[]> = {
+      seeking: [],
+      self: [],
+      both: [],
+      meta: [],
+      other: [],
+    };
+    sortedSignals.forEach((record) => {
+      groups[signalIntentGroup(record.intent)].push(record);
+    });
+    return groups;
+  }, [sortedSignals]);
   const sortedFacecards = useMemo(
     () => facecards.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
     [facecards]
@@ -289,27 +321,36 @@ export default function AdminScreen() {
               ) : sortedSignals.length === 0 ? (
                 <ThemedText style={[styles.mutedText, { color: muted }]}>No signals yet.</ThemedText>
               ) : (
-                sortedSignals.map((record, idx) => (
-                  <View
-                    key={`${record.token}-${record.intent ?? 'none'}-${record.sourceId ?? 'none'}-${idx}`}
-                    style={styles.signalItem}
-                  >
-                    <ThemedText style={styles.signalItemToken}>
-                      {record.canonicalToken ?? record.token}
-                    </ThemedText>
-                    <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                      {`intent=${(record.intent ?? 'self').toLowerCase()} valence=${fmtSigned(record.valence ?? 1)}`}
-                    </ThemedText>
-                    {record.category ? (
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`category=${record.category}`}
-                      </ThemedText>
-                    ) : null}
-                    <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                      {`${record.source ?? 'unknown'} | x${record.count ?? 1}`}
-                    </ThemedText>
-                  </View>
-                ))
+                SIGNAL_GROUP_ORDER.map(({ key, label }) => {
+                  const records = groupedSignals[key];
+                  if (!records.length) return null;
+                  return (
+                    <View key={`group-${key}`} style={styles.signalGroup}>
+                      <ThemedText style={styles.signalGroupTitle}>{`${label} (${records.length})`}</ThemedText>
+                      {records.map((record, idx) => (
+                        <View
+                          key={`${record.token}-${record.intent ?? 'none'}-${record.sourceId ?? 'none'}-${idx}`}
+                          style={styles.signalItem}
+                        >
+                          <ThemedText style={styles.signalItemToken}>
+                            {record.canonicalToken ?? record.token}
+                          </ThemedText>
+                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                            {`intent=${(record.intent ?? 'self').toLowerCase()} valence=${fmtSigned(record.valence ?? 1)}`}
+                          </ThemedText>
+                          {record.category ? (
+                            <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                              {`category=${record.category}`}
+                            </ThemedText>
+                          ) : null}
+                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                            {`${record.source ?? 'unknown'} | x${record.count ?? 1}`}
+                          </ThemedText>
+                        </View>
+                      ))}
+                    </View>
+                  );
+                })
               )}
             </View>
 
@@ -770,6 +811,15 @@ const styles = StyleSheet.create({
   signalItemText: {
     fontSize: 12,
     lineHeight: 18,
+  },
+  signalGroup: {
+    gap: 8,
+  },
+  signalGroupTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
   },
   signalItem: {
     borderRadius: 10,
