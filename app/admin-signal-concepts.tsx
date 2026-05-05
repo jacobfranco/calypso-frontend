@@ -38,6 +38,7 @@ export default function AdminSignalConceptsScreen() {
   const [version, setVersion] = useState<number>(0);
   const [query, setQuery] = useState('');
   const [canonicalDraftByRaw, setCanonicalDraftByRaw] = useState<Record<string, string>>({});
+  const [parentDraftByRaw, setParentDraftByRaw] = useState<Record<string, string>>({});
   const [mapPickerVisible, setMapPickerVisible] = useState(false);
   const [mapPickerRawToken, setMapPickerRawToken] = useState<string | null>(null);
   const [mapPickerSearch, setMapPickerSearch] = useState('');
@@ -182,6 +183,19 @@ export default function AdminSignalConceptsScreen() {
     });
   }, []);
 
+  const parentConceptsForCandidate = useCallback(
+    (candidate?: SignalConceptCandidate | null) => {
+      if (!candidate?.rawToken) return [];
+      const draft = (parentDraftByRaw[candidate.rawToken] ?? '').trim();
+      const source = draft || (candidate.suggestedParents ?? []).join(', ');
+      return source
+        .split(',')
+        .map((item) => item.trim().toLowerCase().replace(/[\s-]+/g, '_'))
+        .filter(Boolean);
+    },
+    [parentDraftByRaw]
+  );
+
   const refresh = useCallback(async () => {
     if (!account || !token) return;
     setLoading(true);
@@ -210,6 +224,7 @@ export default function AdminSignalConceptsScreen() {
       if (!account || !token) return;
       const candidate = candidates.find((entry) => entry.rawToken === rawToken);
       const category = candidate?.suggestedCategory;
+      const parentConcepts = parentConceptsForCandidate(candidate);
       const confirmed = await confirmAction(
         'Create Canonical Concept?',
         `Create a new canonical concept for "${rawToken}" and retroactively backfill affected users?`
@@ -220,20 +235,36 @@ export default function AdminSignalConceptsScreen() {
       setActionLoading(true);
       setMessage(null);
       try {
-        const result = await actOnSignalConceptCandidate(account.id, token, 'create', rawToken, rawToken, category);
+        const result = await actOnSignalConceptCandidate(
+          account.id,
+          token,
+          'create',
+          rawToken,
+          rawToken,
+          category,
+          parentConcepts
+        );
         setCanonicalDraftByRaw((prev) => {
+          const next = { ...prev };
+          delete next[rawToken];
+          return next;
+        });
+        setParentDraftByRaw((prev) => {
           const next = { ...prev };
           delete next[rawToken];
           return next;
         });
         await refresh();
         const observedIds = (result.observedAccountIds ?? []).join(', ');
+        const parents = (result.parentConcepts ?? parentConcepts).join(', ');
         setMessage(
           `Created canonical ${result.canonicalToken ?? rawToken}. migrated=${
             result.migratedStoredAccounts ?? 0
           } replayObserved=${result.replayedObservedAccounts ?? 0} replayOwners=${
             result.replayedContextualOwners ?? 0
-          } category=${result.category ?? category ?? 'other'} observedIds=${observedIds || 'none'}`
+          } category=${result.category ?? category ?? 'other'} parents=${parents || 'none'} observedIds=${
+            observedIds || 'none'
+          }`
         );
       } catch (error) {
         setMessage(error instanceof Error ? error.message : 'Failed to create canonical concept');
@@ -241,7 +272,7 @@ export default function AdminSignalConceptsScreen() {
         setActionLoading(false);
       }
     },
-    [account, token, candidates, confirmAction, refresh]
+    [account, token, candidates, confirmAction, parentConceptsForCandidate, refresh]
   );
 
   const openMapPicker = useCallback(
@@ -519,6 +550,11 @@ export default function AdminSignalConceptsScreen() {
                       {`category=${candidate.suggestedCategory}`}
                     </ThemedText>
                   ) : null}
+                  {candidate.suggestedParents && candidate.suggestedParents.length > 0 ? (
+                    <ThemedText style={[styles.mutedText, { color: muted }]}>
+                      {`suggested_parents=${candidate.suggestedParents.join(', ')}`}
+                    </ThemedText>
+                  ) : null}
                   {candidate.suggestedCanonical ? (
                     <ThemedText style={[styles.mutedText, { color: muted }]}>
                       {`suggested=${candidate.suggestedCanonical} score=${
@@ -557,6 +593,17 @@ export default function AdminSignalConceptsScreen() {
                       {`map_target=${selectedMapTarget}`}
                     </ThemedText>
                   ) : null}
+                  <TextInput
+                    value={parentDraftByRaw[candidate.rawToken] ?? ''}
+                    onChangeText={(value) =>
+                      setParentDraftByRaw((prev) => ({ ...prev, [candidate.rawToken]: value }))
+                    }
+                    style={[styles.searchInput, { borderColor: cardBorder }]}
+                    placeholder="Parent concepts, e.g. video_games, music"
+                    placeholderTextColor={muted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
                   <View style={styles.actionRow}>
                     <Pressable
                       onPress={() => void createCanonicalCandidate(candidate.rawToken)}

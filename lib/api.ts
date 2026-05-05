@@ -243,6 +243,7 @@ export type SignalConceptCandidate = {
   suggestedCanonical?: string;
   suggestionScore?: number;
   suggestedCategory?: string;
+  suggestedParents?: string[];
   autoReady?: boolean;
   blockedAt?: number;
 };
@@ -269,17 +270,65 @@ export type SignalDisambiguationCandidatesResponse = {
   candidates: SignalDisambiguationCandidate[];
 };
 
-export type SilhouetteClaim = {
+export type SilhouetteConcept = {
   id?: string;
-  facet?: string;
-  text: string;
-  kind?: string;
-  polarity?: number;
+  label: string;
+  role?: string;
   confidence?: number;
+  strength?: number;
+  evidenceIds?: string[];
+};
+
+export type SilhouetteAntiPattern = {
+  id?: string;
+  label: string;
+  scope?: string;
+  severity?: string;
+  confidence?: number;
+  evidenceIds?: string[];
+};
+
+export type SilhouetteTension = {
+  id?: string;
+  a: string;
+  b: string;
+  status?: string;
+  confidence?: number;
+  evidenceIds?: string[];
+};
+
+export type SilhouetteEvidence = {
+  id?: string;
   source?: string;
+  target?: string;
+  value: string;
+  derivedConceptIds?: string[];
+  strength?: number;
+  confidence?: number;
+  sourceWeight?: number;
   sourceId?: string;
   promptId?: string;
   createdAt?: number;
+};
+
+export type SilhouetteMode = {
+  id?: string;
+  label?: string;
+  status?: string;
+  weight?: number;
+  confidence?: number;
+  selfExpression?: SilhouetteConcept[];
+  seekingExpression?: SilhouetteConcept[];
+  sparkTriggers?: SilhouetteConcept[];
+  sustainabilityNeeds?: SilhouetteConcept[];
+  aestheticField?: SilhouetteConcept[];
+  antiPatterns?: SilhouetteAntiPattern[];
+  tensions?: SilhouetteTension[];
+  evidence?: SilhouetteEvidence[];
+  openQuestions?: string[];
+  createdAt?: number;
+  updatedAt?: number;
+  lastReinforcedAt?: number;
 };
 
 export type SilhouetteSummaryCache = {
@@ -292,8 +341,8 @@ export type SilhouetteSummaryCache = {
 export type SilhouetteResponse = {
   accountId: number;
   version?: number;
-  maturity?: 'empty' | 'sparse' | 'mature' | string;
-  claims?: SilhouetteClaim[];
+  maturity?: 'empty' | 'sparse' | 'emerging' | 'mature' | string;
+  modes?: SilhouetteMode[];
   summaryCache?: SilhouetteSummaryCache;
   updatedAt?: number;
 };
@@ -1397,13 +1446,15 @@ export async function actOnSignalConceptCandidate(
   action: SignalConceptCandidateAction,
   rawToken: string,
   canonicalToken?: string,
-  category?: string
+  category?: string,
+  parentConcepts?: string[]
 ): Promise<{
   action?: string;
   changed: boolean;
   rawToken?: string;
   canonicalToken?: string;
   category?: string;
+  parentConcepts?: string[];
   migratedStoredAccounts?: number;
   replayedObservedAccounts?: number;
   replayedContextualOwners?: number;
@@ -1415,7 +1466,7 @@ export async function actOnSignalConceptCandidate(
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ action, rawToken, canonicalToken, category }),
+    body: JSON.stringify({ action, rawToken, canonicalToken, category, parentConcepts }),
   });
 
   const json = (await res.json()) as
@@ -1425,6 +1476,7 @@ export async function actOnSignalConceptCandidate(
         rawToken?: string;
         canonicalToken?: string;
         category?: string;
+        parentConcepts?: string[];
         migratedStoredAccounts?: number;
         replayedObservedAccounts?: number;
         replayedContextualOwners?: number;
@@ -1440,6 +1492,7 @@ export async function actOnSignalConceptCandidate(
     rawToken: 'rawToken' in json ? json.rawToken : undefined,
     canonicalToken: 'canonicalToken' in json ? json.canonicalToken : undefined,
     category: 'category' in json ? json.category : undefined,
+    parentConcepts: 'parentConcepts' in json ? json.parentConcepts : undefined,
     migratedStoredAccounts:
       'migratedStoredAccounts' in json ? json.migratedStoredAccounts : undefined,
     replayedObservedAccounts:
@@ -1455,18 +1508,20 @@ export async function promoteSignalConceptCandidate(
   token: string,
   rawToken: string,
   canonicalToken: string,
-  category?: string
+  category?: string,
+  parentConcepts?: string[]
 ): Promise<{
   changed: boolean;
   rawToken?: string;
   canonicalToken?: string;
   category?: string;
+  parentConcepts?: string[];
   migratedStoredAccounts?: number;
   replayedObservedAccounts?: number;
   replayedContextualOwners?: number;
   observedAccountIds?: number[];
 }> {
-  return actOnSignalConceptCandidate(accountId, token, 'map', rawToken, canonicalToken, category);
+  return actOnSignalConceptCandidate(accountId, token, 'map', rawToken, canonicalToken, category, parentConcepts);
 }
 
 export async function rejectSignalConceptCandidate(

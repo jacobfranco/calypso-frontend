@@ -97,16 +97,10 @@ export default function PromptDetailScreen() {
       setMessage('Add an answer before saving.');
       return;
     }
-    setStatus('saving');
+    setStatus('idle');
     setMessage(null);
-    try {
-      await postPublicPromptAnswer(account.id, token, promptId, { body: trimmed });
-      setStatus('idle');
-      router.back();
-    } catch (error) {
-      setStatus('error');
-      setMessage(error instanceof Error ? error.message : 'Failed to save response');
-    }
+    postPublicPromptAnswer(account.id, token, promptId, { body: trimmed }).catch(() => {});
+    router.back();
   }, [account, token, promptId, answerText, router]);
 
   if (!prompt && status === 'loading') {

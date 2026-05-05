@@ -203,10 +203,12 @@ export default function HomeScreen() {
   const privateChatScrollRef = useRef<ScrollView>(null);
   const feedWarmupRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const feedWarmupRetryCountRef = useRef(0);
+  const facecardOpenPendingRef = useRef(false);
   const [loading, setLoading] = useState(false);
   const [card, setCard] = useState<PublicPromptFeedCard | null>(null);
   const [selectedReactionStrength, setSelectedReactionStrength] = useState<ReactionStrength>(0);
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
+  const [facecardRefetching, setFacecardRefetching] = useState(false);
   const [facecardsOverlayOpen, setFacecardsOverlayOpen] = useState(false);
   const [facecardReacting, setFacecardReacting] = useState(false);
   const [facecardDeck, setFacecardDeck] = useState<MatchCard[]>([]);
@@ -273,7 +275,6 @@ export default function HomeScreen() {
   );
   const hasDraftPrivateInput = privatePromptInput.trim().length > 0;
   const shouldSubmitNow = privatePromptReadyToSubmit && !hasDraftPrivateInput;
-  const hasFacecards = facecards.length > 0;
   const promptOverlayTitle =
     activePromptChannel === 'matchmaking' ? 'Matchmaking follow-up' : 'Private prompt';
   const promptBannerNote =
@@ -463,6 +464,8 @@ export default function HomeScreen() {
 
   useEffect(() => {
     setFacecards([]);
+    setFacecardRefetching(false);
+    facecardOpenPendingRef.current = false;
     setFacecardPhotosByAccountId({});
     resetFacecardsOverlay();
   }, [account?.id, resetFacecardsOverlay]);
@@ -471,8 +474,11 @@ export default function HomeScreen() {
     if (!account || !token) return;
     const deck = sanitizeFacecardDeck(facecards);
     if (!deck.length) {
+      facecardOpenPendingRef.current = true;
+      void loadCard();
       return;
     }
+    facecardOpenPendingRef.current = false;
     setMessage(null);
     Keyboard.dismiss();
     void hydrateFacecardPhotos(deck);
@@ -483,7 +489,23 @@ export default function HomeScreen() {
     requestAnimationFrame(() => {
       facecardsScrollRef.current?.scrollTo({ x: 0, animated: false });
     });
-  }, [account, facecards, hydrateFacecardPhotos, sanitizeFacecardDeck, token]);
+  }, [account, facecards, hydrateFacecardPhotos, loadCard, sanitizeFacecardDeck, token]);
+
+  useEffect(() => {
+    if (facecardOpenPendingRef.current && facecards.length > 0) {
+      openFacecardsOverlay();
+    }
+  }, [facecards, openFacecardsOverlay]);
+
+  const refetchFacecardsAfterExhaustion = useCallback(() => {
+    if (!account || !token) return;
+    setFacecards([]);
+    setFacecardRefetching(true);
+    fetchFacecards(account.id, token, 20)
+      .then((next) => setFacecards(sanitizeFacecardDeck(next)))
+      .catch(() => {})
+      .finally(() => setFacecardRefetching(false));
+  }, [account, sanitizeFacecardDeck, token]);
 
   const handleFacecardDeckScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -503,8 +525,8 @@ export default function HomeScreen() {
       if (!current?.account?.id) {
         const nextIndex = facecardIndex + 1;
         if (nextIndex >= facecardDeck.length) {
-          setFacecards([]);
           resetFacecardsOverlay();
+          refetchFacecardsAfterExhaustion();
         } else {
           setFacecardIndex(nextIndex);
           setFacecards(facecardDeck.slice(nextIndex));
@@ -522,8 +544,8 @@ export default function HomeScreen() {
       }
       const nextIndex = facecardIndex + 1;
       if (nextIndex >= facecardDeck.length) {
-        setFacecards([]);
         resetFacecardsOverlay();
+        refetchFacecardsAfterExhaustion();
         setFacecardReacting(false);
         return;
       }
@@ -535,7 +557,7 @@ export default function HomeScreen() {
       });
       setFacecardReacting(false);
     },
-    [account, facecardDeck, facecardIndex, facecardViewportWidth, resetFacecardsOverlay, token]
+    [account, facecardDeck, facecardIndex, facecardViewportWidth, refetchFacecardsAfterExhaustion, resetFacecardsOverlay, token]
   );
 
   const rotateFacecardPhoto = useCallback(
@@ -669,40 +691,27 @@ export default function HomeScreen() {
       setMessage('Add at least one answer before submitting.');
       return;
     }
-    setPrivatePromptSubmitting(true);
-    try {
-      const conversation = toConversationLines(messagesForSubmit);
-      if (activePromptChannel === 'matchmaking') {
-        await postMatchmakingFollowupAnswer(
-          account.id,
-          token,
-          activePrivatePrompt.assignment.instanceId,
-          body,
-          conversation
-        );
-      } else {
-        await postPrivatePromptAnswer(
-          account.id,
-          token,
-          activePrivatePrompt.assignment.instanceId,
-          body,
-          conversation
-        );
-      }
-      closeOverlay();
-      setActivePrivatePrompt(null);
-      setActivePromptChannel(null);
-    } catch (error) {
-      setMessage(
-        error instanceof Error
-          ? error.message
-          : activePromptChannel === 'matchmaking'
-            ? 'Failed to submit matchmaking follow-up'
-            : 'Failed to submit private prompt'
-      );
-    } finally {
-      setPrivatePromptSubmitting(false);
+    const conversation = toConversationLines(messagesForSubmit);
+    if (activePromptChannel === 'matchmaking') {
+      postMatchmakingFollowupAnswer(
+        account.id,
+        token,
+        activePrivatePrompt.assignment.instanceId,
+        body,
+        conversation
+      ).catch(() => {});
+    } else {
+      postPrivatePromptAnswer(
+        account.id,
+        token,
+        activePrivatePrompt.assignment.instanceId,
+        body,
+        conversation
+      ).catch(() => {});
     }
+    closeOverlay();
+    setActivePrivatePrompt(null);
+    setActivePromptChannel(null);
   }, [
     account,
     activePrivatePrompt,
@@ -792,7 +801,7 @@ export default function HomeScreen() {
           </Pressable>
         ) : null}
 
-        {hasFacecards ? (
+        {facecards.length > 0 ? (
           <Pressable
             onPress={openFacecardsOverlay}
             disabled={privatePromptSubmitting}
@@ -807,7 +816,7 @@ export default function HomeScreen() {
           >
             <MaterialCommunityIcons name="star-face" size={18} color={muted} />
             <ThemedText style={[styles.quickActionText, { color: muted }]}>
-              Facecards {facecards.length}
+              {`Facecards ${facecards.length}`}
             </ThemedText>
           </Pressable>
         ) : null}

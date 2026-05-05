@@ -65,6 +65,18 @@ function signalIntentGroup(intent?: string): SignalIntentGroup {
   return 'other';
 }
 
+function conceptLine(label: string, items?: Array<{ label: string; role?: string; confidence?: number; strength?: number }>): string | null {
+  const kept = (items ?? []).slice(0, 8).map((item) => {
+    const bits = [item.label];
+    if (item.role) bits.push(item.role);
+    bits.push(`c=${(item.confidence ?? 0).toFixed(2)}`);
+    bits.push(`s=${(item.strength ?? 0).toFixed(2)}`);
+    return bits.join(' ');
+  });
+  if (kept.length === 0) return null;
+  return `${label}: ${kept.join(' | ')}`;
+}
+
 export default function AdminScreen() {
   const router = useRouter();
   const { account, token } = useAuth();
@@ -397,29 +409,53 @@ export default function AdminScreen() {
                       </ThemedText>
                     </View>
                   ) : null}
-                  {(silhouette.claims ?? []).slice(0, 12).map((claim, idx) => (
-                    <View key={`claim-${claim.id ?? idx}`} style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>
-                        {claim.facet ?? 'general'}
-                      </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`${claim.text} (conf=${(claim.confidence ?? 0).toFixed(2)})`}
-                      </ThemedText>
-                      {claim.kind ? (
-                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                          {`kind=${claim.kind}`}
+                  {(silhouette.modes ?? []).slice(0, 5).map((mode, idx) => {
+                    const conceptLines = [
+                      conceptLine('self', mode.selfExpression),
+                      conceptLine('seeking', mode.seekingExpression),
+                      conceptLine('spark', mode.sparkTriggers),
+                      conceptLine('sustain', mode.sustainabilityNeeds),
+                      conceptLine('aesthetic', mode.aestheticField),
+                    ].filter((line): line is string => Boolean(line));
+                    return (
+                      <View key={`mode-${mode.id ?? idx}`} style={styles.signalItem}>
+                        <ThemedText style={styles.signalItemToken}>
+                          {`${mode.label ?? mode.id ?? 'mode'} ${mode.status ?? 'emerging'}`}
                         </ThemedText>
-                      ) : null}
-                      {claim.source ? (
                         <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                          {`${claim.source}${claim.promptId ? ` | ${claim.promptId}` : ''}`}
+                          {`weight=${(mode.weight ?? 0).toFixed(2)} confidence=${(mode.confidence ?? 0).toFixed(2)}`}
                         </ThemedText>
-                      ) : null}
-                    </View>
-                  ))}
-                  {(silhouette.claims ?? []).length === 0 ? (
+                        {conceptLines.map((line) => (
+                          <ThemedText key={line} style={[styles.signalItemText, { color: muted }]}>
+                            {line}
+                          </ThemedText>
+                        ))}
+                        {(mode.antiPatterns ?? []).slice(0, 6).map((anti) => (
+                          <ThemedText key={anti.id ?? anti.label} style={[styles.signalItemText, { color: muted }]}>
+                            {`anti: ${anti.label} (${anti.severity ?? 'low'} c=${(anti.confidence ?? 0).toFixed(2)})`}
+                          </ThemedText>
+                        ))}
+                        {(mode.tensions ?? []).slice(0, 4).map((tension) => (
+                          <ThemedText key={tension.id ?? `${tension.a}-${tension.b}`} style={[styles.signalItemText, { color: muted }]}>
+                            {`tension: ${tension.a} / ${tension.b} (${tension.status ?? 'productive_tension'})`}
+                          </ThemedText>
+                        ))}
+                        {(mode.evidence ?? []).slice(0, 5).map((evidence) => (
+                          <ThemedText key={evidence.id ?? evidence.value} style={[styles.signalItemText, { color: muted }]}>
+                            {`evidence: ${evidence.source ?? 'fallback'} -> ${evidence.target ?? 'self_expression'}: ${evidence.value}`}
+                          </ThemedText>
+                        ))}
+                        {(mode.openQuestions ?? []).slice(0, 5).map((question) => (
+                          <ThemedText key={question} style={[styles.signalItemText, { color: muted }]}>
+                            {`question: ${question}`}
+                          </ThemedText>
+                        ))}
+                      </View>
+                    );
+                  })}
+                  {(silhouette.modes ?? []).length === 0 ? (
                     <View style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>claims</ThemedText>
+                      <ThemedText style={styles.signalItemToken}>modes</ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
                         none
                       </ThemedText>
