@@ -158,6 +158,7 @@ export type MatchCard = {
   score: number;
   computedAt: number;
   scorerDebug?: MatchScorerDebug;
+  sharedSignals?: string[];
 };
 
 export type MatchScorerDebug = {
@@ -1253,6 +1254,49 @@ export async function fetchFacecards(
   }
 
   return json.matches.filter((match) => isValidMatchCard(match));
+}
+
+export type DirectMessage = {
+  messageId: string;
+  senderId: string;
+  receiverId: string;
+  text: string;
+  sentAt: number;
+};
+
+export async function sendDirectMessage(
+  accountId: string,
+  token: string,
+  targetAccountId: string,
+  text: string
+): Promise<DirectMessage> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/direct-messages/${targetAccountId}`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }
+  );
+  const json = await res.json();
+  if (!res.ok) throw new Error(extractErrorMessage(json, res.status));
+  return json as DirectMessage;
+}
+
+export async function fetchDirectMessages(
+  accountId: string,
+  token: string,
+  targetAccountId: string,
+  limit = 50
+): Promise<DirectMessage[]> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/direct-messages/${targetAccountId}?limit=${limit}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const json = await res.json();
+  if (!res.ok) throw new Error(extractErrorMessage(json, res.status));
+  if (!('messages' in json) || !Array.isArray(json.messages)) return [];
+  return json.messages as DirectMessage[];
 }
 
 export async function fetchSignals(accountId: string, token: string): Promise<SignalsResponse> {

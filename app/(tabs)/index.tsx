@@ -17,6 +17,7 @@ import {
 import { Image } from 'expo-image';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -55,6 +56,7 @@ const PRIVATE_PROMPT_PRIVACY_NOTE =
   'Your answers stay private and are only used for matchmaking.';
 const FACECARD_NOTE =
   'Facecards come from your highest-ranked candidate pool.';
+const FACECARD_EXHAUSTED_STORAGE_PREFIX = 'calypso.facecards.exhaustedOn.v1:';
 
 function reactionStrengthLabel(strength: ReactionStrength): string {
   switch (strength) {
@@ -89,6 +91,18 @@ function clamp(value: number, min: number, max: number): number {
   if (value < min) return min;
   if (value > max) return max;
   return value;
+}
+
+function todayKey(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function facecardExhaustedStorageKey(accountId: string): string {
+  return `${FACECARD_EXHAUSTED_STORAGE_PREFIX}${accountId}`;
 }
 
 function resolveFacecardPhotoUris(
@@ -203,12 +217,16 @@ export default function HomeScreen() {
   const privateChatScrollRef = useRef<ScrollView>(null);
   const feedWarmupRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const feedWarmupRetryCountRef = useRef(0);
+  const facecardWarmupRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const facecardWarmupRetryCountRef = useRef(0);
+  const facecardRefreshInFlightRef = useRef<Promise<void> | null>(null);
   const facecardOpenPendingRef = useRef(false);
   const [loading, setLoading] = useState(false);
   const [card, setCard] = useState<PublicPromptFeedCard | null>(null);
   const [selectedReactionStrength, setSelectedReactionStrength] = useState<ReactionStrength>(0);
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
-  const [facecardRefetching, setFacecardRefetching] = useState(false);
+  const [, setFacecardRefetching] = useState(false);
+  const [facecardsExhaustedToday, setFacecardsExhaustedToday] = useState(false);
   const [facecardsOverlayOpen, setFacecardsOverlayOpen] = useState(false);
   const [facecardReacting, setFacecardReacting] = useState(false);
   const [facecardDeck, setFacecardDeck] = useState<MatchCard[]>([]);
@@ -326,13 +344,58 @@ export default function HomeScreen() {
     }
   }, []);
 
+  const clearFacecardWarmupRetry = useCallback(() => {
+    if (facecardWarmupRetryTimeoutRef.current) {
+      clearTimeout(facecardWarmupRetryTimeoutRef.current);
+      facecardWarmupRetryTimeoutRef.current = null;
+    }
+  }, []);
+
+  const markFacecardsExhaustedToday = useCallback(() => {
+    setFacecardsExhaustedToday(true);
+    setFacecards([]);
+    facecardWarmupRetryCountRef.current = 0;
+    clearFacecardWarmupRetry();
+    const accountId = account?.id;
+    if (accountId) {
+      AsyncStorage.setItem(facecardExhaustedStorageKey(accountId), todayKey()).catch(() => {});
+    }
+  }, [account?.id, clearFacecardWarmupRetry]);
+
   useEffect(() => {
     feedWarmupRetryCountRef.current = 0;
+    facecardWarmupRetryCountRef.current = 0;
     clearFeedWarmupRetry();
+    clearFacecardWarmupRetry();
     return () => {
       clearFeedWarmupRetry();
+      clearFacecardWarmupRetry();
     };
-  }, [account?.id, clearFeedWarmupRetry]);
+  }, [account?.id, clearFacecardWarmupRetry, clearFeedWarmupRetry]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFacecardsExhaustedToday(false);
+    const accountId = account?.id;
+    if (!accountId) return () => {
+      cancelled = true;
+    };
+    AsyncStorage.getItem(facecardExhaustedStorageKey(accountId))
+      .then((storedDay) => {
+        if (cancelled) return;
+        const exhausted = storedDay === todayKey();
+        setFacecardsExhaustedToday(exhausted);
+        if (exhausted) {
+          setFacecards([]);
+          facecardWarmupRetryCountRef.current = 0;
+          clearFacecardWarmupRetry();
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [account?.id, clearFacecardWarmupRetry]);
 
   const hydrateFacecardPhotos = useCallback(async (deck: MatchCard[]) => {
     const accountIds = Array.from(
@@ -371,26 +434,62 @@ export default function HomeScreen() {
     }
   }, []);
 
+  const refreshFacecards = useCallback(
+    async function refreshFacecardsImpl(replace = false) {
+      if (!account || !token || facecardsExhaustedToday) return;
+      if (facecardRefreshInFlightRef.current) {
+        return facecardRefreshInFlightRef.current;
+      }
+      const refresh = (async () => {
+        setFacecardRefetching(true);
+        try {
+          const nextFacecards = await fetchFacecards(account.id, token, 20);
+          const sanitizedIncomingFacecards = sanitizeFacecardDeck(nextFacecards);
+          setFacecards((prev) =>
+            replace ? sanitizedIncomingFacecards : mergeFacecardQueues(prev, sanitizedIncomingFacecards)
+          );
+          if (sanitizedIncomingFacecards.length > 0) {
+            facecardWarmupRetryCountRef.current = 0;
+            clearFacecardWarmupRetry();
+            return;
+          }
+          if (facecardWarmupRetryCountRef.current < 3) {
+            facecardWarmupRetryCountRef.current += 1;
+            clearFacecardWarmupRetry();
+            facecardWarmupRetryTimeoutRef.current = setTimeout(() => {
+              void refreshFacecardsImpl(replace);
+            }, 900);
+          }
+        } catch {
+          clearFacecardWarmupRetry();
+        } finally {
+          setFacecardRefetching(false);
+        }
+      })();
+      facecardRefreshInFlightRef.current = refresh;
+      return refresh.finally(() => {
+        if (facecardRefreshInFlightRef.current === refresh) {
+          facecardRefreshInFlightRef.current = null;
+        }
+      });
+    },
+    [account, clearFacecardWarmupRetry, facecardsExhaustedToday, sanitizeFacecardDeck, token]
+  );
+
   const loadCard = useCallback(async () => {
     if (!account || !token) return;
     setLoading(true);
     setMessage(null);
     try {
-      const [cards, privatePrompt, matchmakingFollowup, nextFacecards] = await Promise.all([
+      const [cards, privatePrompt, matchmakingFollowup] = await Promise.all([
         fetchPublicPromptFeed(account.id, token, 1),
         fetchActivePrivatePrompt(account.id, token),
         fetchActiveMatchmakingFollowup(account.id, token),
-        fetchFacecards(account.id, token, 20),
       ]);
       const nextPrompt = pickActiveAgentPrompt(privatePrompt, matchmakingFollowup);
       setCard(cards.length ? cards[0] : null);
       setActivePrivatePrompt(nextPrompt?.prompt ?? null);
       setActivePromptChannel(nextPrompt?.channel ?? null);
-      const sanitizedIncomingFacecards = sanitizeFacecardDeck(nextFacecards);
-      setFacecards((prev) => {
-        if (sanitizedIncomingFacecards.length === 0) return prev;
-        return mergeFacecardQueues(prev, sanitizedIncomingFacecards);
-      });
       if (cards.length) {
         feedWarmupRetryCountRef.current = 0;
         clearFeedWarmupRetry();
@@ -408,7 +507,7 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
-  }, [account, clearFeedWarmupRetry, sanitizeFacecardDeck, token]);
+  }, [account, clearFeedWarmupRetry, token]);
 
   const scrollPrivateChatToBottom = useCallback((animated: boolean) => {
     requestAnimationFrame(() => {
@@ -419,8 +518,10 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       void loadCard();
+      facecardWarmupRetryCountRef.current = 0;
+      void refreshFacecards();
       return () => {};
-    }, [loadCard])
+    }, [loadCard, refreshFacecards])
   );
 
   useEffect(() => {
@@ -441,11 +542,13 @@ export default function HomeScreen() {
       });
       setSelectedReactionStrength(0);
       await loadCard();
+      facecardWarmupRetryCountRef.current = 0;
+      void refreshFacecards();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to react');
       setLoading(false);
     }
-  }, [account, card, loadCard, selectedReactionStrength, token]);
+  }, [account, card, loadCard, refreshFacecards, selectedReactionStrength, token]);
 
   const resetFacecardsOverlay = useCallback(() => {
     Keyboard.dismiss();
@@ -465,17 +568,22 @@ export default function HomeScreen() {
   useEffect(() => {
     setFacecards([]);
     setFacecardRefetching(false);
+    setFacecardsExhaustedToday(false);
+    facecardWarmupRetryCountRef.current = 0;
     facecardOpenPendingRef.current = false;
+    clearFacecardWarmupRetry();
     setFacecardPhotosByAccountId({});
     resetFacecardsOverlay();
-  }, [account?.id, resetFacecardsOverlay]);
+  }, [account?.id, clearFacecardWarmupRetry, resetFacecardsOverlay]);
 
   const openFacecardsOverlay = useCallback(() => {
     if (!account || !token) return;
     const deck = sanitizeFacecardDeck(facecards);
     if (!deck.length) {
+      if (facecardsExhaustedToday) return;
       facecardOpenPendingRef.current = true;
-      void loadCard();
+      facecardWarmupRetryCountRef.current = 0;
+      void refreshFacecards();
       return;
     }
     facecardOpenPendingRef.current = false;
@@ -489,7 +597,7 @@ export default function HomeScreen() {
     requestAnimationFrame(() => {
       facecardsScrollRef.current?.scrollTo({ x: 0, animated: false });
     });
-  }, [account, facecards, hydrateFacecardPhotos, loadCard, sanitizeFacecardDeck, token]);
+  }, [account, facecards, facecardsExhaustedToday, hydrateFacecardPhotos, refreshFacecards, sanitizeFacecardDeck, token]);
 
   useEffect(() => {
     if (facecardOpenPendingRef.current && facecards.length > 0) {
@@ -498,14 +606,8 @@ export default function HomeScreen() {
   }, [facecards, openFacecardsOverlay]);
 
   const refetchFacecardsAfterExhaustion = useCallback(() => {
-    if (!account || !token) return;
-    setFacecards([]);
-    setFacecardRefetching(true);
-    fetchFacecards(account.id, token, 20)
-      .then((next) => setFacecards(sanitizeFacecardDeck(next)))
-      .catch(() => {})
-      .finally(() => setFacecardRefetching(false));
-  }, [account, sanitizeFacecardDeck, token]);
+    markFacecardsExhaustedToday();
+  }, [markFacecardsExhaustedToday]);
 
   const handleFacecardDeckScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -712,6 +814,8 @@ export default function HomeScreen() {
     closeOverlay();
     setActivePrivatePrompt(null);
     setActivePromptChannel(null);
+    facecardWarmupRetryCountRef.current = 0;
+    void refreshFacecards();
   }, [
     account,
     activePrivatePrompt,
@@ -722,6 +826,7 @@ export default function HomeScreen() {
     privatePromptMessages,
     privatePromptPartIndex,
     privatePromptParts,
+    refreshFacecards,
     token,
   ]);
 

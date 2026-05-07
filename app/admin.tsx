@@ -420,7 +420,10 @@ export default function AdminScreen() {
                     return (
                       <View key={`mode-${mode.id ?? idx}`} style={styles.signalItem}>
                         <ThemedText style={styles.signalItemToken}>
-                          {`${mode.label ?? mode.id ?? 'mode'} ${mode.status ?? 'emerging'}`}
+                          {`${mode.label ?? mode.id ?? 'mode'}`}
+                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                            {` (${mode.status ?? 'emerging'})`}
+                          </ThemedText>
                         </ThemedText>
                         <ThemedText style={[styles.signalItemText, { color: muted }]}>
                           {`weight=${(mode.weight ?? 0).toFixed(2)} confidence=${(mode.confidence ?? 0).toFixed(2)}`}

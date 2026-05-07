@@ -7,12 +7,26 @@ import {
   View,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { useRouter } from 'expo-router';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import { fetchMatches, MatchCard } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
+
+function MatchAvatar({ uri, name }: { uri?: string; name?: string }) {
+  const [error, setError] = useState(false);
+  const initials = (name ?? '?').trim().slice(0, 2).toUpperCase();
+  if (error || !uri) {
+    return (
+      <View style={[styles.avatar, styles.avatarFallback]}>
+        <ThemedText style={styles.avatarInitials}>{initials}</ThemedText>
+      </View>
+    );
+  }
+  return <Image source={{ uri }} style={styles.avatar} onError={() => setError(true)} />;
+}
 
 function formatRelativeTime(epochMillis: number): string {
   if (!epochMillis || Number.isNaN(epochMillis)) return 'Just now';
@@ -25,6 +39,7 @@ function formatRelativeTime(epochMillis: number): string {
 
 export default function MessagesScreen() {
   const { account, token } = useAuth();
+  const router = useRouter();
   const [matches, setMatches] = useState<MatchCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -105,24 +120,34 @@ export default function MessagesScreen() {
 
       <ScrollView contentContainerStyle={styles.listContent} showsVerticalScrollIndicator={false}>
         {matches.map((match) => (
-          <View
+          <Pressable
             key={`${match.account.id}-${match.computedAt}`}
-            style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}
+            onPress={() => router.push(`/chat/${encodeURIComponent(match.account.id)}?name=${encodeURIComponent(match.account.name ?? '')}&avatar=${encodeURIComponent(match.account.avatar_static ?? match.account.avatar ?? '')}`)}
+            style={({ pressed }) => [
+              styles.card,
+              { borderColor: cardBorder, backgroundColor: cardBg, opacity: pressed ? 0.75 : 1 },
+            ]}
           >
-            <Image
-              source={{ uri: match.account.avatar_static ?? match.account.avatar }}
-              style={styles.avatar}
+            <MatchAvatar
+              uri={match.account.avatar_static ?? match.account.avatar}
+              name={match.account.name ?? undefined}
             />
             <View style={styles.meta}>
               <ThemedText type="defaultSemiBold">{match.account.name}</ThemedText>
-              <ThemedText style={[styles.metaText, { color: muted }]}>
-                Mutual gate passed
-              </ThemedText>
+              {(match.sharedSignals ?? []).length > 0 ? (
+                <ThemedText style={[styles.metaText, { color: muted }]}>
+                  {`You both: ${(match.sharedSignals ?? []).slice(0, 3).map(s => s.replace(/_/g, ' ')).join(' · ')}`}
+                </ThemedText>
+              ) : (
+                <ThemedText style={[styles.metaText, { color: muted }]}>
+                  Tap to message
+                </ThemedText>
+              )}
               <ThemedText style={[styles.metaText, { color: muted }]}>
                 Updated {formatRelativeTime(match.computedAt)}
               </ThemedText>
             </View>
-          </View>
+          </Pressable>
         ))}
       </ScrollView>
     </ThemedView>
@@ -169,6 +194,15 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 28,
     backgroundColor: 'rgba(0,0,0,0.08)',
+  },
+  avatarFallback: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.12)',
+  },
+  avatarInitials: {
+    fontSize: 20,
+    fontWeight: '600',
   },
   meta: {
     flex: 1,
