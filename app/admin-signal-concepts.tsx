@@ -320,6 +320,7 @@ export default function AdminSignalConceptsScreen() {
       const candidate = candidates.find((entry) => entry.rawToken === rawToken);
       const canonicalConcept = concepts.find((entry) => entry.concept.trim().toLowerCase() === canonical);
       const category = canonicalConcept?.category ?? candidate?.suggestedCategory;
+      const parentConcepts = parentConceptsForCandidate(candidate);
       const confirmed = await confirmAction(
         'Map Candidate to Canonical?',
         `Map "${rawToken}" to existing canonical "${canonical}" and backfill affected users?`
@@ -330,20 +331,36 @@ export default function AdminSignalConceptsScreen() {
       setActionLoading(true);
       setMessage(null);
       try {
-        const result = await actOnSignalConceptCandidate(account.id, token, 'map', rawToken, canonical, category);
+        const result = await actOnSignalConceptCandidate(
+          account.id,
+          token,
+          'map',
+          rawToken,
+          canonical,
+          category,
+          parentConcepts
+        );
         setCanonicalDraftByRaw((prev) => {
+          const next = { ...prev };
+          delete next[rawToken];
+          return next;
+        });
+        setParentDraftByRaw((prev) => {
           const next = { ...prev };
           delete next[rawToken];
           return next;
         });
         await refresh();
         const observedIds = (result.observedAccountIds ?? []).join(', ');
+        const parents = (result.parentConcepts ?? parentConcepts).join(', ');
         setMessage(
           `Mapped ${rawToken} -> ${canonical}. migrated=${
             result.migratedStoredAccounts ?? 0
           } replayObserved=${result.replayedObservedAccounts ?? 0} replayOwners=${
             result.replayedContextualOwners ?? 0
-          } category=${result.category ?? category ?? 'other'} observedIds=${observedIds || 'none'}`
+          } category=${result.category ?? category ?? 'other'} parents=${parents || 'none'} observedIds=${
+            observedIds || 'none'
+          }`
         );
         return true;
       } catch (error) {
@@ -353,7 +370,7 @@ export default function AdminSignalConceptsScreen() {
         setActionLoading(false);
       }
     },
-    [account, token, canonicalDraftByRaw, canonicalConceptSet, candidates, concepts, confirmAction, refresh]
+    [account, token, canonicalDraftByRaw, canonicalConceptSet, candidates, concepts, confirmAction, parentConceptsForCandidate, refresh]
   );
 
   const jumpToCanonicalList = useCallback(() => {

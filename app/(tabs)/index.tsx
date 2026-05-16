@@ -211,6 +211,73 @@ function buildPrivatePromptBody(parts: string[], answersByPart: string[][]): str
   return sections.join('\n');
 }
 
+function privatePromptAnswerCanCoverRemainingParts(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  return trimmed.length >= 140 || words.length >= 24;
+}
+
+function answerCanCoverRemainingPromptParts(
+  promptId: string | undefined,
+  partIndex: number,
+  answersForCurrentPart: string[],
+  latestUserMessage: string
+): boolean {
+  const combined = [...answersForCurrentPart, latestUserMessage]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(' ');
+  if (promptId === 'private.formative.imprints' && partIndex === 0) {
+    const alreadyAnsweredThisPart = answersForCurrentPart.some((value) => value.trim().length > 0);
+    return hasFormativeImprint(combined) || alreadyAnsweredThisPart;
+  }
+  return privatePromptAnswerCanCoverRemainingParts(latestUserMessage);
+}
+
+function hasFormativeImprint(text: string): boolean {
+  const normalized = text
+    .toLowerCase()
+    .replace(/[^a-z0-9'\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return false;
+  return [
+    'made me interested in',
+    'made me curious about',
+    'got me into',
+    'got me interested',
+    'left me with',
+    'stuck with me because',
+    'shaped my',
+    'shaped me',
+    'influenced my',
+    'led me to',
+    'led to',
+    'sparked',
+    'i still',
+    'now i',
+    'as an adult',
+    'my taste',
+    'my aesthetics',
+    'my aesthetic',
+    'asian culture',
+    'visual culture',
+    'international travel',
+    'other countries',
+    'lived culture',
+    'ordinary culture',
+    'mundane',
+    'everyday',
+    'aesthetics',
+    'curiosity',
+    'curious about',
+    'drawn to',
+    'it taught me',
+    'they taught me',
+  ].some((cue) => normalized.includes(cue));
+}
+
 export default function HomeScreen() {
   const { account, token } = useAuth();
   const facecardsScrollRef = useRef<ScrollView>(null);
@@ -732,7 +799,15 @@ export default function HomeScreen() {
       if (turn.needsMoreDetail) {
         setPrivatePromptReadyToSubmit(false);
       } else {
-        if (privatePromptPartIndex < privatePromptParts.length - 1) {
+        const shouldAdvancePart =
+          privatePromptPartIndex < privatePromptParts.length - 1 &&
+          !answerCanCoverRemainingPromptParts(
+            activePrivatePrompt.prompt.promptId,
+            privatePromptPartIndex,
+            privatePromptAnswersByPart[privatePromptPartIndex] ?? [],
+            userMessage
+          );
+        if (shouldAdvancePart) {
           setPrivatePromptReadyToSubmit(false);
           const nextPartIndex = privatePromptPartIndex + 1;
           setPrivatePromptPartIndex(nextPartIndex);

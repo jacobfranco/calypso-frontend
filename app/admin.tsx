@@ -23,6 +23,9 @@ import {
   MatchCard,
   postDebugSummonNextPrivatePrompt,
   SignalRecord,
+  SilhouetteConcept,
+  SilhouetteEvidence,
+  SilhouetteMode,
   SilhouetteResponse,
 } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
@@ -65,16 +68,149 @@ function signalIntentGroup(intent?: string): SignalIntentGroup {
   return 'other';
 }
 
-function conceptLine(label: string, items?: Array<{ label: string; role?: string; confidence?: number; strength?: number }>): string | null {
-  const kept = (items ?? []).slice(0, 8).map((item) => {
-    const bits = [item.label];
-    if (item.role) bits.push(item.role);
-    bits.push(`c=${(item.confidence ?? 0).toFixed(2)}`);
-    bits.push(`s=${(item.strength ?? 0).toFixed(2)}`);
-    return bits.join(' ');
+function compactAdminText(value: string, maxLength = 180): string {
+  const text = value.trim().replace(/\s+/g, ' ');
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
+}
+
+function normalizeAdminKey(value?: string): string {
+  return (value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function normalizedEvidenceSource(source?: string): string {
+  return (source ?? 'fallback').trim().toLowerCase().replace(/[-\s]+/g, '_');
+}
+
+function isLikelyFormativeReferenceSeed(value: string): boolean {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return false;
+  if (/\b(made|makes|felt|feel|feels|wanted|want|wants|showed|opened|sparked|gave|left|drew|taught|revealed|indicates?)\b/.test(normalized)) {
+    return false;
+  }
+  const meaningful = normalized
+    .split(' ')
+    .filter((word) => word && word !== 'and' && word !== 'the' && word !== 'of').length;
+  return meaningful <= 4 && value.length <= 56;
+}
+
+function evidenceValueFromSummary(value: string): { source: string; text: string } {
+  const idx = value.indexOf(':');
+  if (idx <= 0) {
+    return { source: 'evidence', text: value.trim() };
+  }
+  return {
+    source: normalizedEvidenceSource(value.slice(0, idx)),
+    text: value.slice(idx + 1).trim(),
+  };
+}
+
+function evidenceSourceAndValue(evidence: SilhouetteEvidence): { source: string; text: string } {
+  return {
+    source: normalizedEvidenceSource(evidence.source),
+    text: evidence.value.trim(),
+  };
+}
+
+type ModeConceptSection = {
+  key: string;
+  group: string;
+  concept: SilhouetteConcept;
+  evidence: SilhouetteEvidence[];
+};
+
+function conceptSections(mode: SilhouetteMode): ModeConceptSection[] {
+  const evidence = mode.evidence ?? [];
+  const groups: Array<{ group: string; concepts?: SilhouetteConcept[] }> = [
+    { group: 'self', concepts: mode.selfExpression },
+    { group: 'seeking', concepts: mode.seekingExpression },
+    { group: 'spark', concepts: mode.sparkTriggers },
+    { group: 'comps', concepts: mode.realWorldComps },
+    { group: 'sustain', concepts: mode.sustainabilityNeeds },
+    { group: 'aesthetic', concepts: mode.aestheticField },
+  ];
+
+  return groups.flatMap(({ group, concepts }) =>
+    (concepts ?? []).slice(0, 10).map((concept, idx) => {
+      const conceptId = normalizeAdminKey(concept.id || concept.label);
+      const evidenceIds = new Set((concept.evidenceIds ?? []).map(normalizeAdminKey).filter(Boolean));
+      const linked = evidence
+        .filter((item) => {
+          const itemId = normalizeAdminKey(item.id);
+          const derived = new Set((item.derivedConceptIds ?? []).map(normalizeAdminKey).filter(Boolean));
+          return (
+            (itemId && evidenceIds.has(itemId)) ||
+            (conceptId && derived.has(conceptId))
+          );
+        })
+        .sort((a, b) => {
+          const aScore = (a.strength ?? 0) * (a.confidence ?? 0) * (a.sourceWeight ?? 0);
+          const bScore = (b.strength ?? 0) * (b.confidence ?? 0) * (b.sourceWeight ?? 0);
+          if (bScore !== aScore) return bScore - aScore;
+          return (b.createdAt ?? 0) - (a.createdAt ?? 0);
+        })
+        .slice(0, 4);
+      return {
+        key: `${group}-${conceptId || concept.label}-${idx}`,
+        group,
+        concept,
+        evidence: linked,
+      };
+    })
+  );
+}
+
+function linkedEvidenceIds(sections: ModeConceptSection[]): Set<string> {
+  const out = new Set<string>();
+  sections.forEach((section) => {
+    section.evidence.forEach((evidence) => {
+      const id = normalizeAdminKey(evidence.id);
+      if (id) out.add(id);
+    });
   });
-  if (kept.length === 0) return null;
-  return `${label}: ${kept.join(' | ')}`;
+  return out;
+}
+
+function conceptEvidenceLine(evidence: SilhouetteEvidence): string {
+  const source = normalizedEvidenceSource(evidence.source);
+  const prefix = source === 'formative_imprint' ? 'example' : source;
+  return `${prefix}: ${compactAdminText(evidence.value)}`;
+}
+
+function unlinkedModeEvidenceLines(mode: SilhouetteMode, usedEvidenceIds: Set<string>): string[] {
+  const seeds: string[] = [];
+  const evidence: string[] = [];
+  const rawEvidence = (mode.evidence ?? []).filter((item) => !usedEvidenceIds.has(normalizeAdminKey(item.id)));
+  const rows = rawEvidence.length
+    ? rawEvidence.map(evidenceSourceAndValue)
+    : (mode.evidenceSummary ?? []).map(evidenceValueFromSummary);
+
+  rows.forEach(({ source, text }) => {
+    const value = compactAdminText(text);
+    if (!value) return;
+    if (source === 'formative_imprint') {
+      if (isLikelyFormativeReferenceSeed(value)) {
+        if (seeds.length < 5 && !seeds.includes(value)) seeds.push(value);
+      }
+    } else if (evidence.length < 6) {
+      evidence.push(`${source}: ${value}`);
+    }
+  });
+
+  const out: string[] = [];
+  if (seeds.length) {
+    out.push(`unassigned examples: ${seeds.join(', ')}`);
+  }
+  evidence.forEach((value) => out.push(`evidence: ${value}`));
+  return out.slice(0, 8);
 }
 
 export default function AdminScreen() {
@@ -393,30 +529,17 @@ export default function AdminScreen() {
                       silhouette.updatedAt ?? 0
                     }`}
                   </ThemedText>
-                  {silhouette.summaryCache?.rerankerShort ? (
+                  {silhouette.summaryCache?.silhouette ? (
                     <View style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>reranker_short</ThemedText>
+                      <ThemedText style={styles.signalItemToken}>silhouette</ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {silhouette.summaryCache.rerankerShort}
-                      </ThemedText>
-                    </View>
-                  ) : null}
-                  {silhouette.summaryCache?.adminLong ? (
-                    <View style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>admin_long</ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {silhouette.summaryCache.adminLong}
+                        {silhouette.summaryCache.silhouette}
                       </ThemedText>
                     </View>
                   ) : null}
                   {(silhouette.modes ?? []).slice(0, 5).map((mode, idx) => {
-                    const conceptLines = [
-                      conceptLine('self', mode.selfExpression),
-                      conceptLine('seeking', mode.seekingExpression),
-                      conceptLine('spark', mode.sparkTriggers),
-                      conceptLine('sustain', mode.sustainabilityNeeds),
-                      conceptLine('aesthetic', mode.aestheticField),
-                    ].filter((line): line is string => Boolean(line));
+                    const sections = conceptSections(mode);
+                    const evidenceLines = unlinkedModeEvidenceLines(mode, linkedEvidenceIds(sections));
                     return (
                       <View key={`mode-${mode.id ?? idx}`} style={styles.signalItem}>
                         <ThemedText style={styles.signalItemToken}>
@@ -428,10 +551,25 @@ export default function AdminScreen() {
                         <ThemedText style={[styles.signalItemText, { color: muted }]}>
                           {`weight=${(mode.weight ?? 0).toFixed(2)} confidence=${(mode.confidence ?? 0).toFixed(2)}`}
                         </ThemedText>
-                        {conceptLines.map((line) => (
-                          <ThemedText key={line} style={[styles.signalItemText, { color: muted }]}>
-                            {line}
-                          </ThemedText>
+                        {sections.map((section) => (
+                          <View key={section.key} style={styles.conceptBlock}>
+                            <ThemedText style={styles.conceptHeading}>
+                              {`${section.group}: ${section.concept.label}`}
+                            </ThemedText>
+                            <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                              {`${section.concept.role ?? 'context'} c=${(section.concept.confidence ?? 0).toFixed(
+                                2
+                              )} s=${(section.concept.strength ?? 0).toFixed(2)}`}
+                            </ThemedText>
+                            {section.evidence.map((evidence) => (
+                              <ThemedText
+                                key={evidence.id ?? evidence.value}
+                                style={[styles.conceptExample, { color: muted }]}
+                              >
+                                {conceptEvidenceLine(evidence)}
+                              </ThemedText>
+                            ))}
+                          </View>
                         ))}
                         {(mode.antiPatterns ?? []).slice(0, 6).map((anti) => (
                           <ThemedText key={anti.id ?? anti.label} style={[styles.signalItemText, { color: muted }]}>
@@ -443,9 +581,9 @@ export default function AdminScreen() {
                             {`tension: ${tension.a} / ${tension.b} (${tension.status ?? 'productive_tension'})`}
                           </ThemedText>
                         ))}
-                        {(mode.evidence ?? []).slice(0, 5).map((evidence) => (
-                          <ThemedText key={evidence.id ?? evidence.value} style={[styles.signalItemText, { color: muted }]}>
-                            {`evidence: ${evidence.source ?? 'fallback'} -> ${evidence.target ?? 'self_expression'}: ${evidence.value}`}
+                        {evidenceLines.map((line, evidenceIdx) => (
+                          <ThemedText key={`${line}-${evidenceIdx}`} style={[styles.signalItemText, { color: muted }]}>
+                            {line}
                           </ThemedText>
                         ))}
                         {(mode.openQuestions ?? []).slice(0, 5).map((question) => (
@@ -871,6 +1009,19 @@ const styles = StyleSheet.create({
   signalItemToken: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  conceptBlock: {
+    gap: 2,
+    paddingTop: 6,
+  },
+  conceptHeading: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  conceptExample: {
+    fontSize: 12,
+    lineHeight: 18,
+    paddingLeft: 10,
   },
   inputRow: {
     flexDirection: 'row',

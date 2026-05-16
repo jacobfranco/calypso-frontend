@@ -321,11 +321,13 @@ export type SilhouetteMode = {
   selfExpression?: SilhouetteConcept[];
   seekingExpression?: SilhouetteConcept[];
   sparkTriggers?: SilhouetteConcept[];
+  realWorldComps?: SilhouetteConcept[];
   sustainabilityNeeds?: SilhouetteConcept[];
   aestheticField?: SilhouetteConcept[];
   antiPatterns?: SilhouetteAntiPattern[];
   tensions?: SilhouetteTension[];
   evidence?: SilhouetteEvidence[];
+  evidenceSummary?: string[];
   openQuestions?: string[];
   createdAt?: number;
   updatedAt?: number;
@@ -333,8 +335,7 @@ export type SilhouetteMode = {
 };
 
 export type SilhouetteSummaryCache = {
-  rerankerShort?: string;
-  adminLong?: string;
+  silhouette?: string;
   generatedFromVersion?: number;
   updatedAt?: number;
 };
