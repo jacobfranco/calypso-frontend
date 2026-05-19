@@ -14,8 +14,10 @@ import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
   AdminPairScoreResponse,
+  AdminRerankEventsResponse,
   fetchAdminLlmTelemetry,
   fetchAdminPairScore,
+  fetchAdminRerankEvents,
   fetchAdminSilhouette,
   fetchFacecards,
   fetchSignals,
@@ -84,6 +86,28 @@ function normalizeAdminKey(value?: string): string {
 
 function normalizedEvidenceSource(source?: string): string {
   return (source ?? 'fallback').trim().toLowerCase().replace(/[-\s]+/g, '_');
+}
+
+function normalizeEvidenceText(value?: string): string {
+  return (value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function evidenceAlreadyCovered(value: string, linkedText: string): boolean {
+  const normalized = normalizeEvidenceText(value);
+  if (!normalized || !linkedText) return false;
+  if (normalized.length < 3) return false;
+  if (linkedText.includes(normalized)) return true;
+  const tokens = normalized
+    .split(' ')
+    .filter((token) => token.length > 2 && !['and', 'the', 'of', 'with', 'for'].includes(token));
+  if (tokens.length === 0 || tokens.length > 10) return false;
+  const covered = tokens.filter((token) => linkedText.includes(token)).length;
+  return covered / tokens.length >= 0.75;
 }
 
 function isLikelyFormativeReferenceSeed(value: string): boolean {
@@ -188,6 +212,12 @@ function conceptEvidenceLine(evidence: SilhouetteEvidence): string {
 function unlinkedModeEvidenceLines(mode: SilhouetteMode, usedEvidenceIds: Set<string>): string[] {
   const seeds: string[] = [];
   const evidence: string[] = [];
+  const linkedText = normalizeEvidenceText(
+    (mode.evidence ?? [])
+      .filter((item) => usedEvidenceIds.has(normalizeAdminKey(item.id)))
+      .map((item) => item.value)
+      .join(' ')
+  );
   const rawEvidence = (mode.evidence ?? []).filter((item) => !usedEvidenceIds.has(normalizeAdminKey(item.id)));
   const rows = rawEvidence.length
     ? rawEvidence.map(evidenceSourceAndValue)
@@ -196,6 +226,7 @@ function unlinkedModeEvidenceLines(mode: SilhouetteMode, usedEvidenceIds: Set<st
   rows.forEach(({ source, text }) => {
     const value = compactAdminText(text);
     if (!value) return;
+    if (evidenceAlreadyCovered(value, linkedText)) return;
     if (source === 'formative_imprint') {
       if (isLikelyFormativeReferenceSeed(value)) {
         if (seeds.length < 5 && !seeds.includes(value)) seeds.push(value);
@@ -227,6 +258,8 @@ export default function AdminScreen() {
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
   const [pairScoreLoading, setPairScoreLoading] = useState(false);
   const [pairScore, setPairScore] = useState<AdminPairScoreResponse | null>(null);
+  const [rerankEventsLoading, setRerankEventsLoading] = useState(false);
+  const [rerankEvents, setRerankEvents] = useState<AdminRerankEventsResponse | null>(null);
   const [pairTargetInput, setPairTargetInput] = useState('');
   const [pairTargetId, setPairTargetId] = useState<string | null>(null);
   const [pairAutoRefresh, setPairAutoRefresh] = useState(true);
@@ -344,6 +377,19 @@ export default function AdminScreen() {
     [account, pairTargetId, token]
   );
 
+  const refreshRerankEvents = useCallback(async () => {
+    if (!account || !token) return;
+    setRerankEventsLoading(true);
+    try {
+      const next = await fetchAdminRerankEvents(account.id, token, 50);
+      setRerankEvents(next);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to load rerank audit');
+    } finally {
+      setRerankEventsLoading(false);
+    }
+  }, [account, token]);
+
   useEffect(() => {
     if (!account || !token) {
       setSignalRecords([]);
@@ -351,6 +397,7 @@ export default function AdminScreen() {
       setLlmTelemetry(null);
       setFacecards([]);
       setPairScore(null);
+      setRerankEvents(null);
       return;
     }
     void refreshSignals();
@@ -358,7 +405,8 @@ export default function AdminScreen() {
     void refreshLlmTelemetry();
     void refreshFacecards();
     void refreshPairScore(pairTargetId);
-  }, [account, pairTargetId, refreshFacecards, refreshLlmTelemetry, refreshPairScore, refreshSignals, refreshSilhouette, token]);
+    void refreshRerankEvents();
+  }, [account, pairTargetId, refreshFacecards, refreshLlmTelemetry, refreshPairScore, refreshRerankEvents, refreshSignals, refreshSilhouette, token]);
 
   useEffect(() => {
     if (!account || !token || !pairAutoRefresh) {
@@ -366,9 +414,10 @@ export default function AdminScreen() {
     }
     const timer = setInterval(() => {
       void refreshPairScore();
+      void refreshRerankEvents();
     }, 4000);
     return () => clearInterval(timer);
-  }, [account, pairAutoRefresh, refreshPairScore, token]);
+  }, [account, pairAutoRefresh, refreshPairScore, refreshRerankEvents, token]);
 
   const summonDebugPrivatePrompt = useCallback(async () => {
     if (!account || !token) return;
@@ -824,6 +873,87 @@ export default function AdminScreen() {
                     </View>
                   ) : null}
                 </>
+              )}
+            </View>
+
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <View style={styles.cardHeader}>
+                <ThemedText type="defaultSemiBold">Live: Rerank audit</ThemedText>
+                <Pressable
+                  onPress={refreshRerankEvents}
+                  disabled={rerankEventsLoading || debugPromptLoading}
+                >
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {rerankEventsLoading ? 'Refreshing...' : 'Refresh'}
+                  </ThemedText>
+                </Pressable>
+              </View>
+
+              {rerankEventsLoading && !rerankEvents ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator />
+                  <ThemedText>Loading rerank audit...</ThemedText>
+                </View>
+              ) : !rerankEvents || (rerankEvents.events ?? []).length === 0 ? (
+                <ThemedText style={[styles.mutedText, { color: muted }]}>No rerank events recorded yet.</ThemedText>
+              ) : (
+                (rerankEvents.events ?? []).slice(0, 10).map((event, idx) => {
+                  const before = Number.isFinite(event.scoreBefore) ? (event.scoreBefore as number) : null;
+                  const after = Number.isFinite(event.scoreAfter) ? (event.scoreAfter as number) : null;
+                  const net = Number.isFinite(event.netChange) ? (event.netChange as number) : null;
+                  const percent = Number.isFinite(event.percentChange) ? (event.percentChange as number) : null;
+                  const compat = Number.isFinite(event.tier3Compatibility)
+                    ? (event.tier3Compatibility as number)
+                    : null;
+                  const confidence = Number.isFinite(event.tier3Confidence)
+                    ? (event.tier3Confidence as number)
+                    : null;
+                  const why = (event.whyItWorks ?? []).slice(0, 2).join('; ');
+                  const risks = (event.risks ?? []).slice(0, 2).join('; ');
+                  const missing = (event.missingInfo ?? []).slice(0, 2).join('; ');
+                  return (
+                    <View key={`${event.createdAt}-${event.candidateId ?? idx}`} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>
+                        {`${event.candidateName ?? event.candidateId ?? 'candidate'} ${
+                          event.recommendedUse ? `(${event.recommendedUse})` : ''
+                        }`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`${event.surface ?? 'surface'} ${new Date(event.createdAt).toLocaleTimeString()} ${
+                          event.candidateId ?? ''
+                        }`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`score=${before == null ? 'n/a' : before.toFixed(2)} -> ${
+                          after == null ? 'n/a' : after.toFixed(2)
+                        } net=${net == null ? 'n/a' : fmtDelta(net)} pct=${
+                          percent == null ? 'n/a' : `${fmtDelta(percent)}%`
+                        }`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`compat=${compat == null ? 'n/a' : compat.toFixed(2)} conf=${
+                          confidence == null ? 'n/a' : confidence.toFixed(2)
+                        }`}
+                      </ThemedText>
+                      {event.fitSummaryInternal ? (
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`summary=${event.fitSummaryInternal}`}
+                        </ThemedText>
+                      ) : null}
+                      {why ? (
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>{`why=${why}`}</ThemedText>
+                      ) : null}
+                      {risks ? (
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>{`risks=${risks}`}</ThemedText>
+                      ) : null}
+                      {missing ? (
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`missing=${missing}`}
+                        </ThemedText>
+                      ) : null}
+                    </View>
+                  );
+                })
               )}
             </View>
 

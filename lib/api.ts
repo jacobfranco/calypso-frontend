@@ -441,6 +441,38 @@ export type AdminPairScoreResponse = {
   pair?: AdminPairSnapshot | null;
 };
 
+export type AdminRerankEvent = {
+  createdAt: number;
+  surface?: string;
+  viewerId?: string;
+  candidateId?: string;
+  candidateName?: string;
+  scoreBefore?: number;
+  scoreAfter?: number;
+  netChange?: number;
+  percentChange?: number | null;
+  tier2Normalized?: number;
+  tier3Compatibility?: number;
+  tier3Confidence?: number;
+  tier3AppliedWeight?: number;
+  recommendedUse?: string;
+  fitSummaryInternal?: string;
+  whyItWorks?: string[];
+  risks?: string[];
+  missingInfo?: string[];
+  conversationSeeds?: string[];
+  bestModePair?: {
+    viewerModeId?: string;
+    candidateModeId?: string;
+  };
+};
+
+export type AdminRerankEventsResponse = {
+  generatedAt: number;
+  viewerId: string;
+  events: AdminRerankEvent[];
+};
+
 export type SignalConceptCandidateAction = 'create' | 'map' | 'reject' | 'block' | 'unblock';
 
 export type TokenResponse = {
@@ -1481,6 +1513,27 @@ export async function fetchAdminPairScore(
   }
   if (!('viewerId' in json) || !('topCandidates' in json) || !Array.isArray(json.topCandidates)) {
     throw new Error('Unexpected response from /api/accounts/{id}/admin/pair-score');
+  }
+  return json;
+}
+
+export async function fetchAdminRerankEvents(
+  accountId: string,
+  token: string,
+  limit = 50
+): Promise<AdminRerankEventsResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/admin/rerank-events?limit=${limit}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as AdminRerankEventsResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('viewerId' in json) || !('events' in json) || !Array.isArray(json.events)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/admin/rerank-events');
   }
   return json;
 }
