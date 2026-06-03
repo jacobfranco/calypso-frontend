@@ -19,10 +19,8 @@ import {
   fetchAdminPairScore,
   fetchAdminRerankEvents,
   fetchAdminSilhouette,
-  fetchFacecards,
   fetchSignals,
   LlmTelemetryResponse,
-  MatchCard,
   postDebugSummonNextPrivatePrompt,
   SignalRecord,
   SilhouetteConcept,
@@ -49,6 +47,11 @@ function fmtDelta(value: number | null | undefined): string {
   if (!Number.isFinite(value)) return 'n/a';
   const rounded = (value as number).toFixed(2);
   return (value as number) >= 0 ? `+${rounded}` : rounded;
+}
+
+function fmtCount(value: number | null | undefined): string {
+  if (!Number.isFinite(value)) return '0';
+  return String(Math.round(value as number));
 }
 
 type SignalIntentGroup = 'seeking' | 'self' | 'both' | 'meta' | 'other';
@@ -251,11 +254,9 @@ export default function AdminScreen() {
   const [signalsLoading, setSignalsLoading] = useState(false);
   const [silhouetteLoading, setSilhouetteLoading] = useState(false);
   const [llmTelemetryLoading, setLlmTelemetryLoading] = useState(false);
-  const [facecardsLoading, setFacecardsLoading] = useState(false);
   const [signalRecords, setSignalRecords] = useState<SignalRecord[]>([]);
   const [silhouette, setSilhouette] = useState<SilhouetteResponse | null>(null);
   const [llmTelemetry, setLlmTelemetry] = useState<LlmTelemetryResponse | null>(null);
-  const [facecards, setFacecards] = useState<MatchCard[]>([]);
   const [pairScoreLoading, setPairScoreLoading] = useState(false);
   const [pairScore, setPairScore] = useState<AdminPairScoreResponse | null>(null);
   const [rerankEventsLoading, setRerankEventsLoading] = useState(false);
@@ -263,6 +264,7 @@ export default function AdminScreen() {
   const [pairTargetInput, setPairTargetInput] = useState('');
   const [pairTargetId, setPairTargetId] = useState<string | null>(null);
   const [pairAutoRefresh, setPairAutoRefresh] = useState(true);
+  const [expandedTelemetryRows, setExpandedTelemetryRows] = useState<Record<string, boolean>>({});
   const [message, setMessage] = useState<string | null>(null);
 
   const borderColor = useThemeColor(
@@ -303,11 +305,6 @@ export default function AdminScreen() {
     });
     return groups;
   }, [sortedSignals]);
-  const sortedFacecards = useMemo(
-    () => facecards.slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
-    [facecards]
-  );
-
   const refreshSignals = useCallback(async () => {
     if (!account || !token) return;
     setSignalsLoading(true);
@@ -318,19 +315,6 @@ export default function AdminScreen() {
       setMessage(error instanceof Error ? error.message : 'Failed to load signals');
     } finally {
       setSignalsLoading(false);
-    }
-  }, [account, token]);
-
-  const refreshFacecards = useCallback(async () => {
-    if (!account || !token) return;
-    setFacecardsLoading(true);
-    try {
-      const next = await fetchFacecards(account.id, token, 8);
-      setFacecards(next ?? []);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Failed to load facecards');
-    } finally {
-      setFacecardsLoading(false);
     }
   }, [account, token]);
 
@@ -395,7 +379,6 @@ export default function AdminScreen() {
       setSignalRecords([]);
       setSilhouette(null);
       setLlmTelemetry(null);
-      setFacecards([]);
       setPairScore(null);
       setRerankEvents(null);
       return;
@@ -403,10 +386,9 @@ export default function AdminScreen() {
     void refreshSignals();
     void refreshSilhouette();
     void refreshLlmTelemetry();
-    void refreshFacecards();
     void refreshPairScore(pairTargetId);
     void refreshRerankEvents();
-  }, [account, pairTargetId, refreshFacecards, refreshLlmTelemetry, refreshPairScore, refreshRerankEvents, refreshSignals, refreshSilhouette, token]);
+  }, [account, pairTargetId, refreshLlmTelemetry, refreshPairScore, refreshRerankEvents, refreshSignals, refreshSilhouette, token]);
 
   useEffect(() => {
     if (!account || !token || !pairAutoRefresh) {
@@ -450,6 +432,13 @@ export default function AdminScreen() {
     void refreshPairScore(null);
   }, [refreshPairScore]);
 
+  const toggleTelemetryRow = useCallback((key: string) => {
+    setExpandedTelemetryRows((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  }, []);
+
   return (
     <ThemedView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -481,13 +470,13 @@ export default function AdminScreen() {
           <>
             <Pressable
               onPress={summonDebugPrivatePrompt}
-              disabled={debugPromptLoading || signalsLoading || facecardsLoading}
+              disabled={debugPromptLoading || signalsLoading}
               style={({ pressed }) => [
                 styles.card,
                 {
                   borderColor: cardBorder,
                   backgroundColor: cardBg,
-                  opacity: pressed || debugPromptLoading || signalsLoading || facecardsLoading ? 0.7 : 1,
+                  opacity: pressed || debugPromptLoading || signalsLoading ? 0.7 : 1,
                 },
               ]}
             >
@@ -502,7 +491,7 @@ export default function AdminScreen() {
                   <ThemedText type="defaultSemiBold">Temp: Extracted signals</ThemedText>
                 <Pressable
                   onPress={refreshSignals}
-                  disabled={signalsLoading || debugPromptLoading || facecardsLoading}
+                  disabled={signalsLoading || debugPromptLoading}
                 >
                   <ThemedText style={[styles.mutedText, { color: muted }]}>
                     {signalsLoading ? 'Refreshing...' : 'Refresh'}
@@ -556,7 +545,7 @@ export default function AdminScreen() {
                 <ThemedText type="defaultSemiBold">Temp: Silhouette (read-only)</ThemedText>
                 <Pressable
                   onPress={refreshSilhouette}
-                  disabled={silhouetteLoading || signalsLoading || facecardsLoading || debugPromptLoading}
+                  disabled={silhouetteLoading || signalsLoading || debugPromptLoading}
                 >
                   <ThemedText style={[styles.mutedText, { color: muted }]}>
                     {silhouetteLoading ? 'Refreshing...' : 'Refresh'}
@@ -660,7 +649,7 @@ export default function AdminScreen() {
                 <ThemedText type="defaultSemiBold">Temp: LLM telemetry (read-only)</ThemedText>
                 <Pressable
                   onPress={refreshLlmTelemetry}
-                  disabled={llmTelemetryLoading || signalsLoading || facecardsLoading || debugPromptLoading}
+                  disabled={llmTelemetryLoading || signalsLoading || debugPromptLoading}
                 >
                   <ThemedText style={[styles.mutedText, { color: muted }]}>
                     {llmTelemetryLoading ? 'Refreshing...' : 'Refresh'}
@@ -698,16 +687,59 @@ export default function AdminScreen() {
                       </ThemedText>
                     </View>
                   ))}
-                  {(llmTelemetry.events ?? []).slice(0, 12).map((event, idx) => (
-                    <View key={`${event.createdAt}-${event.stage}-${idx}`} style={styles.signalItem}>
+                  {(llmTelemetry.byContext ?? []).slice(0, 8).map((row) => (
+                    <View key={`${row.contextKey}`} style={styles.signalItem}>
                       <ThemedText style={styles.signalItemToken}>
-                        {`${event.stage}/${event.surface} ${event.success ? 'ok' : 'fail'}`}
+                        {`${row.operation || row.stage}/${row.surface} acct=${row.accountId ?? 'n/a'}`}
                       </ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`model=${event.model} tok=${event.totalTokens} in=${event.inputTokens} out=${event.outputTokens} ms=${event.latencyMs}`}
+                        {`calls=${row.calls} fail=${row.failures} tokens=${row.totalTokens} chars=${fmtCount(
+                          row.promptChars
+                        )} candidates=${fmtCount(row.candidateCount)}`}
                       </ThemedText>
                     </View>
                   ))}
+                  {(llmTelemetry.events ?? []).slice(0, 24).map((event, idx) => {
+                    const key = `${event.createdAt}-${event.stage}-${event.surface}-${idx}`;
+                    const expanded = expandedTelemetryRows[key] === true;
+                    const accountLabel = event.accountId == null ? 'acct=n/a' : `acct=${event.accountId}`;
+                    const targetLabel = event.targetAccountId == null ? '' : ` target=${event.targetAccountId}`;
+                    return (
+                      <Pressable key={key} onPress={() => toggleTelemetryRow(key)} style={styles.signalItem}>
+                        <ThemedText style={styles.signalItemToken}>
+                          {`${event.operation || event.stage}/${event.surface} ${
+                            event.success ? 'ok' : 'fail'
+                          } tok=${event.totalTokens}`}
+                        </ThemedText>
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`${accountLabel}${targetLabel} model=${event.model} ${new Date(
+                            event.createdAt
+                          ).toLocaleTimeString()}`}
+                        </ThemedText>
+                        {expanded ? (
+                          <>
+                            <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                              {`stage=${event.stage} prompt=${event.promptId || 'n/a'} source=${
+                                event.sourceId || 'n/a'
+                              }`}
+                            </ThemedText>
+                            <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                              {`in=${event.inputTokens} out=${event.outputTokens} max_out=${
+                                event.maxOutputTokens ?? 'n/a'
+                              } chars=${event.promptChars ?? 'n/a'} candidates=${
+                                event.candidateCount ?? 'n/a'
+                              } ms=${event.latencyMs}`}
+                            </ThemedText>
+                            {event.error ? (
+                              <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                                {`error=${event.error}`}
+                              </ThemedText>
+                            ) : null}
+                          </>
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
                 </>
               )}
             </View>
@@ -841,7 +873,18 @@ export default function AdminScreen() {
                   {pairScore.pair ? (
                     <View style={styles.signalItem}>
                       <ThemedText style={styles.signalItemToken}>
-                        {`pair target=${pairScore.pair.targetAccountId} mode=${pairScore.pair.targetMode}`}
+                        {`pair target=${pairScore.pair.targetAccountId} mode=${pairScore.pair.targetMode} source=${
+                          pairScore.pair.scoreSource ?? 'n/a'
+                        }`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`pair_reaction(v->t/t->v)=${fmtDelta(pairScore.pair.viewerToTargetReactionScore)}/${fmtDelta(
+                          pairScore.pair.targetToViewerReactionScore
+                        )} facecard_like=${pairScore.pair.viewerLikedTargetFacecard ? 'yes' : 'no'}/${
+                          pairScore.pair.targetLikedViewerFacecard ? 'yes' : 'no'
+                        } prompt_like=${pairScore.pair.viewerPromptLikeSeen ? 'yes' : 'no'}/${
+                          pairScore.pair.targetPromptLikeSeen ? 'yes' : 'no'
+                        }`}
                       </ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
                         {`viewer->target score=${
@@ -908,6 +951,15 @@ export default function AdminScreen() {
                   const confidence = Number.isFinite(event.tier3Confidence)
                     ? (event.tier3Confidence as number)
                     : null;
+                  const eventType = event.eventType ?? 'applied';
+                  const skipCounts =
+                    event.skipReason && Number.isFinite(event.requiredPublicPromptReactionCount)
+                      ? `viewer=${Number.isFinite(event.viewerPublicPromptReactionCount) ? event.viewerPublicPromptReactionCount : 'n/a'} candidate=${
+                          Number.isFinite(event.candidatePublicPromptReactionCount)
+                            ? event.candidatePublicPromptReactionCount
+                            : 'n/a'
+                        } min=${event.requiredPublicPromptReactionCount}`
+                      : null;
                   const why = (event.whyItWorks ?? []).slice(0, 2).join('; ');
                   const risks = (event.risks ?? []).slice(0, 2).join('; ');
                   const missing = (event.missingInfo ?? []).slice(0, 2).join('; ');
@@ -915,13 +967,17 @@ export default function AdminScreen() {
                     <View key={`${event.createdAt}-${event.candidateId ?? idx}`} style={styles.signalItem}>
                       <ThemedText style={styles.signalItemToken}>
                         {`${event.candidateName ?? event.candidateId ?? 'candidate'} ${
-                          event.recommendedUse ? `(${event.recommendedUse})` : ''
+                          event.skipReason
+                            ? `(skipped:${event.skipReason})`
+                            : event.recommendedUse
+                              ? `(${event.recommendedUse})`
+                              : ''
                         }`}
                       </ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`${event.surface ?? 'surface'} ${new Date(event.createdAt).toLocaleTimeString()} ${
-                          event.candidateId ?? ''
-                        }`}
+                        {`${eventType} ${event.surface ?? 'surface'} source=${
+                          event.scoreSource ?? 'n/a'
+                        } ${new Date(event.createdAt).toLocaleTimeString()} ${event.candidateId ?? ''}`}
                       </ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
                         {`score=${before == null ? 'n/a' : before.toFixed(2)} -> ${
@@ -935,6 +991,11 @@ export default function AdminScreen() {
                           confidence == null ? 'n/a' : confidence.toFixed(2)
                         }`}
                       </ThemedText>
+                      {event.skipReason ? (
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`skip_reason=${event.skipReason}${skipCounts ? ` ${skipCounts}` : ''}`}
+                        </ThemedText>
+                      ) : null}
                       {event.fitSummaryInternal ? (
                         <ThemedText style={[styles.signalItemText, { color: muted }]}>
                           {`summary=${event.fitSummaryInternal}`}
@@ -957,112 +1018,6 @@ export default function AdminScreen() {
               )}
             </View>
 
-            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-              <View style={styles.cardHeader}>
-                <ThemedText type="defaultSemiBold">Temp: Facecard score debug</ThemedText>
-                <Pressable
-                  onPress={refreshFacecards}
-                  disabled={facecardsLoading || signalsLoading || debugPromptLoading}
-                >
-                  <ThemedText style={[styles.mutedText, { color: muted }]}>
-                    {facecardsLoading ? 'Refreshing...' : 'Refresh'}
-                  </ThemedText>
-                </Pressable>
-              </View>
-
-              {facecardsLoading ? (
-                <View style={styles.loadingRow}>
-                  <ActivityIndicator />
-                  <ThemedText>Loading facecards...</ThemedText>
-                </View>
-              ) : sortedFacecards.length === 0 ? (
-                <ThemedText style={[styles.mutedText, { color: muted }]}>No facecards loaded.</ThemedText>
-              ) : (
-                sortedFacecards.map((match) => {
-                  const debug = match.scorerDebug;
-                  const filterPreferenceFit = Number.isFinite(debug?.filterPreferenceFit)
-                    ? (debug?.filterPreferenceFit as number)
-                    : null;
-                  const signalAlignment = Number.isFinite(debug?.signalAlignment)
-                    ? (debug?.signalAlignment as number)
-                    : null;
-                  const profileSignalBlend = Number.isFinite(debug?.profileSignalBlend)
-                    ? (debug?.profileSignalBlend as number)
-                    : null;
-                  const viewerNeedsMetByTarget = Number.isFinite(debug?.viewerNeedsMetByTarget)
-                    ? (debug?.viewerNeedsMetByTarget as number)
-                    : null;
-                  const targetNeedsMetByViewer = Number.isFinite(debug?.targetNeedsMetByViewer)
-                    ? (debug?.targetNeedsMetByViewer as number)
-                    : null;
-                  const sharedSelfOverlap = Number.isFinite(debug?.sharedSelfOverlap)
-                    ? (debug?.sharedSelfOverlap as number)
-                    : null;
-                  const viewerReactionScore = Number.isFinite(debug?.viewerReactionScore)
-                    ? (debug?.viewerReactionScore as number)
-                    : null;
-                  const targetInterestScore = Number.isFinite(debug?.targetInterestScore)
-                    ? (debug?.targetInterestScore as number)
-                    : null;
-                  const noveltyScore = Number.isFinite(debug?.noveltyScore)
-                    ? (debug?.noveltyScore as number)
-                    : null;
-                  const finalScore = Number.isFinite(debug?.finalScore)
-                    ? (debug?.finalScore as number)
-                    : null;
-                  const tier3Compatibility = Number.isFinite(debug?.tier3Compatibility)
-                    ? (debug?.tier3Compatibility as number)
-                    : null;
-                  const tier3Confidence = Number.isFinite(debug?.tier3Confidence)
-                    ? (debug?.tier3Confidence as number)
-                    : null;
-                  const tier3Applied = debug?.tier3Applied === true;
-                  const tier3HardBlocker = debug?.tier3HardBlocker === true;
-                  const tier3Reason =
-                    typeof debug?.tier3Reason === 'string' ? debug.tier3Reason : null;
-                  return (
-                    <View key={match.account.id} style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>
-                        {match.account.name ?? match.account.id}
-                      </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`score=${match.score.toFixed(2)} final=${
-                          finalScore == null ? 'n/a' : finalScore.toFixed(3)
-                        } blend=${profileSignalBlend == null ? 'n/a' : profileSignalBlend.toFixed(3)}`}
-                      </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`fit=${
-                          filterPreferenceFit == null ? 'n/a' : filterPreferenceFit.toFixed(3)
-                        } align=${signalAlignment == null ? 'n/a' : signalAlignment.toFixed(3)} overlap=${
-                          sharedSelfOverlap == null ? 'n/a' : sharedSelfOverlap.toFixed(3)
-                        }`}
-                      </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`needs(v->t/t->v)=${
-                          viewerNeedsMetByTarget == null ? 'n/a' : viewerNeedsMetByTarget.toFixed(3)
-                        }/${targetNeedsMetByViewer == null ? 'n/a' : targetNeedsMetByViewer.toFixed(3)} react=${
-                          viewerReactionScore == null ? 'n/a' : viewerReactionScore.toFixed(3)
-                        } interest=${targetInterestScore == null ? 'n/a' : targetInterestScore.toFixed(3)} novelty=${
-                          noveltyScore == null ? 'n/a' : noveltyScore.toFixed(3)
-                        }`}
-                      </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`tier3=${tier3Applied ? 'applied' : 'off'} compat=${
-                          tier3Compatibility == null ? 'n/a' : tier3Compatibility.toFixed(2)
-                        } conf=${tier3Confidence == null ? 'n/a' : tier3Confidence.toFixed(2)} blocker=${
-                          tier3HardBlocker ? 'yes' : 'no'
-                        }`}
-                      </ThemedText>
-                      {tier3Reason ? (
-                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                          {`tier3_reason=${tier3Reason}`}
-                        </ThemedText>
-                      ) : null}
-                    </View>
-                  );
-                })
-              )}
-            </View>
           </>
         )}
       </ScrollView>

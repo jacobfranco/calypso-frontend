@@ -169,6 +169,7 @@ export type MatchScorerDebug = {
   signalAlignment?: number;
   profileSignalBlend?: number;
   viewerReactionScore?: number;
+  targetReactionScore?: number;
   targetInterestScore?: number;
   noveltyScore?: number;
   finalScore?: number;
@@ -180,6 +181,9 @@ export type MatchScorerDebug = {
   tier3HardBlocker?: boolean;
   tier3Reason?: string;
   tier3Applied?: boolean;
+  tier3Surface?: string;
+  tier3Cached?: boolean;
+  tier3ScoreSource?: string;
   scoreBeforeTier3?: number;
   scoreAfterTier3?: number;
 };
@@ -372,6 +376,23 @@ export type LlmTelemetryStageSummary = {
   totalTokens: number;
 };
 
+export type LlmTelemetryContextSummary = {
+  contextKey: string;
+  stage: string;
+  surface: string;
+  operation?: string;
+  accountId?: number;
+  calls: number;
+  successes: number;
+  failures: number;
+  avgLatencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  candidateCount?: number;
+  promptChars?: number;
+};
+
 export type LlmTelemetryEvent = {
   createdAt: number;
   stage: string;
@@ -383,6 +404,12 @@ export type LlmTelemetryEvent = {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  accountId?: number;
+  targetAccountId?: number;
+  operation?: string;
+  sourceId?: string;
+  candidateCount?: number;
+  promptChars?: number;
   maxOutputTokens?: number;
   error?: string;
 };
@@ -391,6 +418,7 @@ export type LlmTelemetryResponse = {
   generatedAt: number;
   totals: LlmTelemetryTotals;
   byStage: LlmTelemetryStageSummary[];
+  byContext?: LlmTelemetryContextSummary[];
   events: LlmTelemetryEvent[];
 };
 
@@ -401,25 +429,38 @@ export type AdminPairThresholds = {
 
 export type AdminPairTopCandidate = {
   account: Account;
+  scoreSource?: string;
   score: number;
   computedAt: number;
   deltaToMatchThreshold: number;
   deltaToAutoPassThreshold: number;
+  meetsMatchThreshold?: boolean;
+  meetsAutoPassThreshold?: boolean;
+  noveltyScore?: number;
+  viewerReactionScore?: number;
+  targetReactionScore?: number;
   scorerDebug?: MatchScorerDebug;
 };
 
 export type AdminPairDirectionalScore = {
   present: boolean;
   account?: Account;
+  scoreSource?: string;
   score?: number;
   computedAt?: number;
   deltaToMatchThreshold?: number;
   deltaToAutoPassThreshold?: number;
+  meetsMatchThreshold?: boolean;
+  meetsAutoPassThreshold?: boolean;
+  noveltyScore?: number;
+  viewerReactionScore?: number;
+  targetReactionScore?: number;
   scorerDebug?: MatchScorerDebug;
 };
 
 export type AdminPairSnapshot = {
   targetAccountId: string;
+  scoreSource?: string;
   viewerMode: string;
   targetMode: string;
   viewerThresholds: AdminPairThresholds;
@@ -428,6 +469,12 @@ export type AdminPairSnapshot = {
   targetToViewer: AdminPairDirectionalScore;
   mutualMinScore?: number;
   mutualDeltaToThreshold?: number;
+  viewerToTargetReactionScore?: number;
+  targetToViewerReactionScore?: number;
+  viewerLikedTargetFacecard?: boolean;
+  targetLikedViewerFacecard?: boolean;
+  viewerPromptLikeSeen?: boolean;
+  targetPromptLikeSeen?: boolean;
   bothMeetMatchThreshold: boolean;
   bothMeetAutoPassThreshold: boolean;
 };
@@ -443,7 +490,9 @@ export type AdminPairScoreResponse = {
 
 export type AdminRerankEvent = {
   createdAt: number;
+  eventType?: string;
   surface?: string;
+  scoreSource?: string;
   viewerId?: string;
   candidateId?: string;
   candidateName?: string;
@@ -456,6 +505,10 @@ export type AdminRerankEvent = {
   tier3Confidence?: number;
   tier3AppliedWeight?: number;
   recommendedUse?: string;
+  skipReason?: string;
+  requiredPublicPromptReactionCount?: number;
+  viewerPublicPromptReactionCount?: number;
+  candidatePublicPromptReactionCount?: number;
   fitSummaryInternal?: string;
   whyItWorks?: string[];
   risks?: string[];
