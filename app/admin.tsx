@@ -7,6 +7,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useRouter } from 'expo-router';
 
 import { ThemedText } from '@/components/themed-text';
@@ -88,6 +89,25 @@ const SIGNAL_GROUP_ORDER: { key: SignalIntentGroup; label: string }[] = [
   { key: 'meta', label: 'Meta' },
   { key: 'other', label: 'Other' },
 ];
+
+type AdminSectionId =
+  | 'signals'
+  | 'silhouette'
+  | 'llmTelemetry'
+  | 'aiDecisions'
+  | 'signalConcepts'
+  | 'pairScore'
+  | 'rerankAudit';
+
+const DEFAULT_EXPANDED_ADMIN_SECTIONS: Record<AdminSectionId, boolean> = {
+  signals: false,
+  silhouette: false,
+  llmTelemetry: false,
+  aiDecisions: false,
+  signalConcepts: false,
+  pairScore: false,
+  rerankAudit: false,
+};
 
 function signalIntentGroup(intent?: string): SignalIntentGroup {
   const normalized = intent?.trim().toLowerCase();
@@ -272,6 +292,65 @@ function unlinkedModeEvidenceLines(mode: SilhouetteMode, usedEvidenceIds: Set<st
   return out.slice(0, 8);
 }
 
+function AdminSection({
+  title,
+  summary,
+  expanded,
+  onToggle,
+  headerAction,
+  borderColor,
+  backgroundColor,
+  mutedColor,
+  children,
+}: {
+  title: string;
+  summary?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  headerAction?: React.ReactNode;
+  borderColor: string;
+  backgroundColor: string;
+  mutedColor: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={[styles.card, { borderColor, backgroundColor }]}>
+      <View style={styles.collapsibleHeader}>
+        <Pressable
+          onPress={onToggle}
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          style={({ pressed }) => [
+            styles.collapsibleToggle,
+            { opacity: pressed ? 0.72 : 1 },
+          ]}
+        >
+          <View style={styles.collapsibleTitleBlock}>
+            <ThemedText type="defaultSemiBold">{title}</ThemedText>
+            {summary ? (
+              <ThemedText numberOfLines={2} style={[styles.mutedText, { color: mutedColor }]}>
+                {summary}
+              </ThemedText>
+            ) : null}
+          </View>
+          <View style={[styles.expandPill, { borderColor }]}>
+            <MaterialIcons
+              name={expanded ? 'expand-less' : 'expand-more'}
+              size={18}
+              color={mutedColor}
+            />
+            <ThemedText style={[styles.expandPillText, { color: mutedColor }]}>
+              {expanded ? 'Collapse' : 'Expand'}
+            </ThemedText>
+          </View>
+        </Pressable>
+        {headerAction ? <View style={styles.headerAction}>{headerAction}</View> : null}
+      </View>
+      {expanded ? children : null}
+    </View>
+  );
+}
+
 export default function AdminScreen() {
   const router = useRouter();
   const { account, token } = useAuth();
@@ -293,6 +372,9 @@ export default function AdminScreen() {
   const [pairAutoRefresh, setPairAutoRefresh] = useState(true);
   const [expandedTelemetryRows, setExpandedTelemetryRows] = useState<Record<string, boolean>>({});
   const [expandedAiDecisionRows, setExpandedAiDecisionRows] = useState<Record<string, boolean>>({});
+  const [expandedSections, setExpandedSections] = useState<Record<AdminSectionId, boolean>>(
+    DEFAULT_EXPANDED_ADMIN_SECTIONS
+  );
   const [message, setMessage] = useState<string | null>(null);
 
   const borderColor = useThemeColor(
@@ -333,6 +415,57 @@ export default function AdminScreen() {
     });
     return groups;
   }, [sortedSignals]);
+
+  const signalsSummary = useMemo(() => {
+    if (signalsLoading) return 'Loading signals...';
+    if (sortedSignals.length === 0) return 'No signals yet.';
+    const groups = SIGNAL_GROUP_ORDER
+      .map(({ key, label }) => {
+        const count = groupedSignals[key].length;
+        return count > 0 ? `${label.toLowerCase()}=${count}` : null;
+      })
+      .filter(Boolean)
+      .join(' ');
+    return `${sortedSignals.length} total ${groups}`;
+  }, [groupedSignals, signalsLoading, sortedSignals.length]);
+
+  const silhouetteSummary = useMemo(() => {
+    if (silhouetteLoading) return 'Loading silhouette...';
+    if (!silhouette) return 'No silhouette loaded.';
+    return `maturity=${silhouette.maturity ?? 'empty'} modes=${(silhouette.modes ?? []).length} version=${
+      silhouette.version ?? 1
+    }`;
+  }, [silhouette, silhouetteLoading]);
+
+  const llmTelemetrySummary = useMemo(() => {
+    if (llmTelemetryLoading) return 'Loading telemetry...';
+    if (!llmTelemetry) return 'No telemetry loaded.';
+    return `calls=${llmTelemetry.totals?.calls ?? 0} fail=${llmTelemetry.totals?.failures ?? 0} tokens=${
+      llmTelemetry.totals?.totalTokens ?? 0
+    } events=${(llmTelemetry.events ?? []).length}`;
+  }, [llmTelemetry, llmTelemetryLoading]);
+
+  const aiDecisionsSummary = useMemo(() => {
+    if (aiDecisionsLoading && !aiDecisions) return 'Loading AI decisions...';
+    if (!aiDecisions) return 'No AI decisions loaded.';
+    return `decisions=${aiDecisions.totals?.decisions ?? 0} events=${(aiDecisions.events ?? []).length} actions: ${compactAggregateRows(
+      aiDecisions.byAction,
+      'action'
+    )}`;
+  }, [aiDecisions, aiDecisionsLoading]);
+
+  const pairScoreSummary = useMemo(() => {
+    if (pairScoreLoading && !pairScore) return 'Loading pair-score snapshot...';
+    const target = pairTargetId ? `target=${pairTargetId}` : 'target=none';
+    const candidates = pairScore ? `candidates=${(pairScore.topCandidates ?? []).length}` : 'No snapshot loaded.';
+    return `${target} auto-refresh=${pairAutoRefresh ? 'on' : 'off'} ${candidates}`;
+  }, [pairAutoRefresh, pairScore, pairScoreLoading, pairTargetId]);
+
+  const rerankSummary = useMemo(() => {
+    if (rerankEventsLoading && !rerankEvents) return 'Loading rerank audit...';
+    const count = (rerankEvents?.events ?? []).length;
+    return count === 0 ? 'No rerank events recorded yet.' : `${count} recent events`;
+  }, [rerankEvents, rerankEventsLoading]);
   const refreshSignals = useCallback(async () => {
     if (!account || !token) return;
     setSignalsLoading(true);
@@ -490,6 +623,13 @@ export default function AdminScreen() {
     }));
   }, []);
 
+  const toggleAdminSection = useCallback((section: AdminSectionId) => {
+    setExpandedSections((prev) => ({
+      ...prev,
+      [section]: !prev[section],
+    }));
+  }, []);
+
   return (
     <ThemedView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -502,10 +642,6 @@ export default function AdminScreen() {
           </Pressable>
           <ThemedText type="title">Admin</ThemedText>
         </View>
-
-        <ThemedText style={[styles.mutedText, { color: muted }]}>
-          Temporary demo/debug tools.
-        </ThemedText>
 
         {message ? (
           <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
@@ -531,15 +667,21 @@ export default function AdminScreen() {
                 },
               ]}
             >
-              <ThemedText type="defaultSemiBold">Temp: Summon another private prompt</ThemedText>
+              <ThemedText type="defaultSemiBold">New private prompt</ThemedText>
               <ThemedText style={[styles.mutedText, { color: muted }]}>
                 {debugPromptLoading ? 'Summoning...' : 'Testing only'}
               </ThemedText>
             </Pressable>
 
-              <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-                <View style={styles.cardHeader}>
-                  <ThemedText type="defaultSemiBold">Temp: Extracted signals</ThemedText>
+            <AdminSection
+              title="Signals"
+              summary={signalsSummary}
+              expanded={expandedSections.signals}
+              onToggle={() => toggleAdminSection('signals')}
+              borderColor={cardBorder}
+              backgroundColor={cardBg}
+              mutedColor={muted}
+              headerAction={
                 <Pressable
                   onPress={refreshSignals}
                   disabled={signalsLoading || debugPromptLoading}
@@ -548,8 +690,8 @@ export default function AdminScreen() {
                     {signalsLoading ? 'Refreshing...' : 'Refresh'}
                   </ThemedText>
                 </Pressable>
-              </View>
-
+              }
+            >
               {signalsLoading ? (
                 <View style={styles.loadingRow}>
                   <ActivityIndicator />
@@ -589,11 +731,17 @@ export default function AdminScreen() {
                   );
                 })
               )}
-            </View>
+            </AdminSection>
 
-            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-              <View style={styles.cardHeader}>
-                <ThemedText type="defaultSemiBold">Temp: Silhouette (read-only)</ThemedText>
+            <AdminSection
+              title="Silhouette"
+              summary={silhouetteSummary}
+              expanded={expandedSections.silhouette}
+              onToggle={() => toggleAdminSection('silhouette')}
+              borderColor={cardBorder}
+              backgroundColor={cardBg}
+              mutedColor={muted}
+              headerAction={
                 <Pressable
                   onPress={refreshSilhouette}
                   disabled={silhouetteLoading || signalsLoading || debugPromptLoading}
@@ -602,8 +750,8 @@ export default function AdminScreen() {
                     {silhouetteLoading ? 'Refreshing...' : 'Refresh'}
                   </ThemedText>
                 </Pressable>
-              </View>
-
+              }
+            >
               {silhouetteLoading ? (
                 <View style={styles.loadingRow}>
                   <ActivityIndicator />
@@ -693,11 +841,17 @@ export default function AdminScreen() {
                   ) : null}
                 </>
               )}
-            </View>
+            </AdminSection>
 
-            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-              <View style={styles.cardHeader}>
-                <ThemedText type="defaultSemiBold">Temp: LLM telemetry (read-only)</ThemedText>
+            <AdminSection
+              title="LLM telemetry"
+              summary={llmTelemetrySummary}
+              expanded={expandedSections.llmTelemetry}
+              onToggle={() => toggleAdminSection('llmTelemetry')}
+              borderColor={cardBorder}
+              backgroundColor={cardBg}
+              mutedColor={muted}
+              headerAction={
                 <Pressable
                   onPress={refreshLlmTelemetry}
                   disabled={llmTelemetryLoading || signalsLoading || debugPromptLoading}
@@ -706,8 +860,8 @@ export default function AdminScreen() {
                     {llmTelemetryLoading ? 'Refreshing...' : 'Refresh'}
                   </ThemedText>
                 </Pressable>
-              </View>
-
+              }
+            >
               {llmTelemetryLoading ? (
                 <View style={styles.loadingRow}>
                   <ActivityIndicator />
@@ -793,11 +947,17 @@ export default function AdminScreen() {
                   })}
                 </>
               )}
-            </View>
+            </AdminSection>
 
-            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-              <View style={styles.cardHeader}>
-                <ThemedText type="defaultSemiBold">Live: AI decisions</ThemedText>
+            <AdminSection
+              title="AI decisions"
+              summary={aiDecisionsSummary}
+              expanded={expandedSections.aiDecisions}
+              onToggle={() => toggleAdminSection('aiDecisions')}
+              borderColor={cardBorder}
+              backgroundColor={cardBg}
+              mutedColor={muted}
+              headerAction={
                 <Pressable
                   onPress={refreshAiDecisions}
                   disabled={aiDecisionsLoading || debugPromptLoading}
@@ -806,8 +966,8 @@ export default function AdminScreen() {
                     {aiDecisionsLoading ? 'Refreshing...' : 'Refresh'}
                   </ThemedText>
                 </Pressable>
-              </View>
-
+              }
+            >
               {aiDecisionsLoading && !aiDecisions ? (
                 <View style={styles.loadingRow}>
                   <ActivityIndicator />
@@ -873,28 +1033,41 @@ export default function AdminScreen() {
                   ) : null}
                 </>
               )}
-            </View>
+            </AdminSection>
 
-            <Pressable
-              onPress={() => router.push('/admin-signal-concepts')}
-              style={({ pressed }) => [
-                styles.card,
-                {
-                  borderColor: cardBorder,
-                  backgroundColor: cardBg,
-                  opacity: pressed ? 0.75 : 1,
-                },
-              ]}
+            <AdminSection
+              title="Signal Registry + Drift Queue"
+              summary="Registry, candidates, promote/reject tooling."
+              expanded={expandedSections.signalConcepts}
+              onToggle={() => toggleAdminSection('signalConcepts')}
+              borderColor={cardBorder}
+              backgroundColor={cardBg}
+              mutedColor={muted}
             >
-              <ThemedText type="defaultSemiBold">Temp: Signal concept registry + drift queue</ThemedText>
-              <ThemedText style={[styles.mutedText, { color: muted }]}>
-                Open full-screen tooling (registry, candidates, promote/reject).
-              </ThemedText>
-            </Pressable>
+              <Pressable
+                onPress={() => router.push('/admin-signal-concepts')}
+                style={({ pressed }) => [
+                  styles.sectionActionButton,
+                  {
+                    borderColor: cardBorder,
+                    opacity: pressed ? 0.75 : 1,
+                  },
+                ]}
+              >
+                <ThemedText style={styles.sectionActionText}>Open full-screen tooling</ThemedText>
+                <MaterialIcons name="chevron-right" size={18} color={muted} />
+              </Pressable>
+            </AdminSection>
 
-            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-              <View style={styles.cardHeader}>
-                <ThemedText type="defaultSemiBold">Live: Pair score inspector</ThemedText>
+            <AdminSection
+              title="Pair scores"
+              summary={pairScoreSummary}
+              expanded={expandedSections.pairScore}
+              onToggle={() => toggleAdminSection('pairScore')}
+              borderColor={cardBorder}
+              backgroundColor={cardBg}
+              mutedColor={muted}
+              headerAction={
                 <Pressable
                   onPress={() => void refreshPairScore()}
                   disabled={pairScoreLoading || debugPromptLoading}
@@ -903,8 +1076,8 @@ export default function AdminScreen() {
                     {pairScoreLoading ? 'Refreshing...' : 'Refresh'}
                   </ThemedText>
                 </Pressable>
-              </View>
-
+              }
+            >
               <ThemedText style={[styles.signalItemText, { color: muted }]}>
                 {`Auto-refresh=${pairAutoRefresh ? 'on' : 'off'} (4s) ${
                   pairTargetId ? `target=${pairTargetId}` : 'target=none'
@@ -1048,11 +1221,17 @@ export default function AdminScreen() {
                   ) : null}
                 </>
               )}
-            </View>
+            </AdminSection>
 
-            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-              <View style={styles.cardHeader}>
-                <ThemedText type="defaultSemiBold">Live: Rerank audit</ThemedText>
+            <AdminSection
+              title="Rerank audit"
+              summary={rerankSummary}
+              expanded={expandedSections.rerankAudit}
+              onToggle={() => toggleAdminSection('rerankAudit')}
+              borderColor={cardBorder}
+              backgroundColor={cardBg}
+              mutedColor={muted}
+              headerAction={
                 <Pressable
                   onPress={refreshRerankEvents}
                   disabled={rerankEventsLoading || debugPromptLoading}
@@ -1061,8 +1240,8 @@ export default function AdminScreen() {
                     {rerankEventsLoading ? 'Refreshing...' : 'Refresh'}
                   </ThemedText>
                 </Pressable>
-              </View>
-
+              }
+            >
               {rerankEventsLoading && !rerankEvents ? (
                 <View style={styles.loadingRow}>
                   <ActivityIndicator />
@@ -1147,7 +1326,7 @@ export default function AdminScreen() {
                   );
                 })
               )}
-            </View>
+            </AdminSection>
 
           </>
         )}
@@ -1187,10 +1366,57 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 10,
   },
-  cardHeader: {
+  collapsibleHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  collapsibleToggle: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  collapsibleTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  expandPill: {
+    flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 3,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  expandPillText: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
+  headerAction: {
+    flexShrink: 0,
+    paddingTop: 4,
+  },
+  sectionActionButton: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  sectionActionText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
   loadingRow: {
     flexDirection: 'row',
