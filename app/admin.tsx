@@ -13,8 +13,10 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
+  AdminAiDecisionsResponse,
   AdminPairScoreResponse,
   AdminRerankEventsResponse,
+  fetchAdminAiDecisions,
   fetchAdminLlmTelemetry,
   fetchAdminPairScore,
   fetchAdminRerankEvents,
@@ -54,9 +56,32 @@ function fmtCount(value: number | null | undefined): string {
   return String(Math.round(value as number));
 }
 
+function compactAdminValue(value: unknown, maxLength = 260): string {
+  if (value == null) return 'n/a';
+  if (typeof value === 'string') return compactAdminText(value, maxLength);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) {
+    const body = value.slice(0, 8).map((item) => compactAdminValue(item, 80)).join(', ');
+    return value.length > 8 ? `[${body}, ...]` : `[${body}]`;
+  }
+  try {
+    return compactAdminText(JSON.stringify(value), maxLength);
+  } catch {
+    return compactAdminText(String(value), maxLength);
+  }
+}
+
+function compactAggregateRows(rows: { surface?: string; action?: string; count: number }[] | undefined, key: 'surface' | 'action'): string {
+  const values = (rows ?? [])
+    .slice(0, 5)
+    .map((row) => `${row[key] ?? 'unknown'}=${row.count}`)
+    .join(' ');
+  return values || 'none';
+}
+
 type SignalIntentGroup = 'seeking' | 'self' | 'both' | 'meta' | 'other';
 
-const SIGNAL_GROUP_ORDER: Array<{ key: SignalIntentGroup; label: string }> = [
+const SIGNAL_GROUP_ORDER: { key: SignalIntentGroup; label: string }[] = [
   { key: 'seeking', label: 'Seeking' },
   { key: 'self', label: 'Self' },
   { key: 'both', label: 'Both' },
@@ -156,7 +181,7 @@ type ModeConceptSection = {
 
 function conceptSections(mode: SilhouetteMode): ModeConceptSection[] {
   const evidence = mode.evidence ?? [];
-  const groups: Array<{ group: string; concepts?: SilhouetteConcept[] }> = [
+  const groups: { group: string; concepts?: SilhouetteConcept[] }[] = [
     { group: 'self', concepts: mode.selfExpression },
     { group: 'seeking', concepts: mode.seekingExpression },
     { group: 'spark', concepts: mode.sparkTriggers },
@@ -257,6 +282,8 @@ export default function AdminScreen() {
   const [signalRecords, setSignalRecords] = useState<SignalRecord[]>([]);
   const [silhouette, setSilhouette] = useState<SilhouetteResponse | null>(null);
   const [llmTelemetry, setLlmTelemetry] = useState<LlmTelemetryResponse | null>(null);
+  const [aiDecisionsLoading, setAiDecisionsLoading] = useState(false);
+  const [aiDecisions, setAiDecisions] = useState<AdminAiDecisionsResponse | null>(null);
   const [pairScoreLoading, setPairScoreLoading] = useState(false);
   const [pairScore, setPairScore] = useState<AdminPairScoreResponse | null>(null);
   const [rerankEventsLoading, setRerankEventsLoading] = useState(false);
@@ -265,6 +292,7 @@ export default function AdminScreen() {
   const [pairTargetId, setPairTargetId] = useState<string | null>(null);
   const [pairAutoRefresh, setPairAutoRefresh] = useState(true);
   const [expandedTelemetryRows, setExpandedTelemetryRows] = useState<Record<string, boolean>>({});
+  const [expandedAiDecisionRows, setExpandedAiDecisionRows] = useState<Record<string, boolean>>({});
   const [message, setMessage] = useState<string | null>(null);
 
   const borderColor = useThemeColor(
@@ -344,6 +372,19 @@ export default function AdminScreen() {
     }
   }, [account, token]);
 
+  const refreshAiDecisions = useCallback(async () => {
+    if (!account || !token) return;
+    setAiDecisionsLoading(true);
+    try {
+      const next = await fetchAdminAiDecisions(account.id, token, 120);
+      setAiDecisions(next);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to load AI decisions');
+    } finally {
+      setAiDecisionsLoading(false);
+    }
+  }, [account, token]);
+
   const refreshPairScore = useCallback(
     async (targetOverride?: string | null) => {
       if (!account || !token) return;
@@ -379,6 +420,7 @@ export default function AdminScreen() {
       setSignalRecords([]);
       setSilhouette(null);
       setLlmTelemetry(null);
+      setAiDecisions(null);
       setPairScore(null);
       setRerankEvents(null);
       return;
@@ -386,9 +428,10 @@ export default function AdminScreen() {
     void refreshSignals();
     void refreshSilhouette();
     void refreshLlmTelemetry();
+    void refreshAiDecisions();
     void refreshPairScore(pairTargetId);
     void refreshRerankEvents();
-  }, [account, pairTargetId, refreshLlmTelemetry, refreshPairScore, refreshRerankEvents, refreshSignals, refreshSilhouette, token]);
+  }, [account, pairTargetId, refreshAiDecisions, refreshLlmTelemetry, refreshPairScore, refreshRerankEvents, refreshSignals, refreshSilhouette, token]);
 
   useEffect(() => {
     if (!account || !token || !pairAutoRefresh) {
@@ -396,10 +439,11 @@ export default function AdminScreen() {
     }
     const timer = setInterval(() => {
       void refreshPairScore();
+      void refreshAiDecisions();
       void refreshRerankEvents();
     }, 4000);
     return () => clearInterval(timer);
-  }, [account, pairAutoRefresh, refreshPairScore, refreshRerankEvents, token]);
+  }, [account, pairAutoRefresh, refreshAiDecisions, refreshPairScore, refreshRerankEvents, token]);
 
   const summonDebugPrivatePrompt = useCallback(async () => {
     if (!account || !token) return;
@@ -434,6 +478,13 @@ export default function AdminScreen() {
 
   const toggleTelemetryRow = useCallback((key: string) => {
     setExpandedTelemetryRows((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  }, []);
+
+  const toggleAiDecisionRow = useCallback((key: string) => {
+    setExpandedAiDecisionRows((prev) => ({
       ...prev,
       [key]: !prev[key],
     }));
@@ -740,6 +791,86 @@ export default function AdminScreen() {
                       </Pressable>
                     );
                   })}
+                </>
+              )}
+            </View>
+
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <View style={styles.cardHeader}>
+                <ThemedText type="defaultSemiBold">Live: AI decisions</ThemedText>
+                <Pressable
+                  onPress={refreshAiDecisions}
+                  disabled={aiDecisionsLoading || debugPromptLoading}
+                >
+                  <ThemedText style={[styles.mutedText, { color: muted }]}>
+                    {aiDecisionsLoading ? 'Refreshing...' : 'Refresh'}
+                  </ThemedText>
+                </Pressable>
+              </View>
+
+              {aiDecisionsLoading && !aiDecisions ? (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator />
+                  <ThemedText>Loading AI decisions...</ThemedText>
+                </View>
+              ) : !aiDecisions ? (
+                <ThemedText style={[styles.mutedText, { color: muted }]}>No AI decisions loaded.</ThemedText>
+              ) : (
+                <>
+                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                    {`decisions=${aiDecisions.totals?.decisions ?? 0} generatedAt=${aiDecisions.generatedAt}`}
+                  </ThemedText>
+                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                    {`surfaces: ${compactAggregateRows(aiDecisions.bySurface, 'surface')}`}
+                  </ThemedText>
+                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                    {`actions: ${compactAggregateRows(aiDecisions.byAction, 'action')}`}
+                  </ThemedText>
+                  {(aiDecisions.byDecision ?? []).slice(0, 6).map((row) => (
+                    <View key={row.decisionKey ?? `${row.surface}-${row.stage}-${row.action}`} style={styles.signalItem}>
+                      <ThemedText style={styles.signalItemToken}>
+                        {`${row.action ?? 'action'} / ${row.surface ?? 'surface'}`}
+                      </ThemedText>
+                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                        {`stage=${row.stage ?? 'unknown'} count=${row.count}`}
+                      </ThemedText>
+                    </View>
+                  ))}
+                  {(aiDecisions.events ?? []).slice(0, 20).map((event, idx) => {
+                    const key = `${event.createdAt}-${event.surface}-${event.stage}-${event.action}-${idx}`;
+                    const expanded = expandedAiDecisionRows[key] === true;
+                    const details = Object.entries(event.details ?? {}).slice(0, 16);
+                    const accountLabel = event.accountId == null ? 'acct=n/a' : `acct=${event.accountId}`;
+                    const targetLabel = event.targetAccountId == null ? '' : ` target=${event.targetAccountId}`;
+                    return (
+                      <Pressable key={key} onPress={() => toggleAiDecisionRow(key)} style={styles.signalItem}>
+                        <ThemedText style={styles.signalItemToken}>
+                          {`${event.action} / ${event.surface}`}
+                        </ThemedText>
+                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                          {`stage=${event.stage} ${accountLabel}${targetLabel} ${new Date(
+                            event.createdAt
+                          ).toLocaleTimeString()}`}
+                        </ThemedText>
+                        {expanded ? (
+                          details.length === 0 ? (
+                            <ThemedText style={[styles.signalItemText, { color: muted }]}>details=none</ThemedText>
+                          ) : (
+                            details.map(([detailKey, value]) => (
+                              <ThemedText key={detailKey} style={[styles.signalItemText, { color: muted }]}>
+                                {`${detailKey}=${compactAdminValue(value)}`}
+                              </ThemedText>
+                            ))
+                          )
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                  {(aiDecisions.events ?? []).length === 0 ? (
+                    <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                      No recent decisions recorded.
+                    </ThemedText>
+                  ) : null}
                 </>
               )}
             </View>

@@ -239,12 +239,12 @@ export type SignalConceptCandidate = {
   lastSeen: number;
   lastSource?: string;
   exampleContexts: string[];
-  observedAccounts?: Array<{
+  observedAccounts?: {
     accountId: number;
     intent?: string;
     seenCount: number;
     averageValence: number;
-  }>;
+  }[];
   suggestedCanonical?: string;
   suggestionScore?: number;
   suggestedCategory?: string;
@@ -524,6 +524,45 @@ export type AdminRerankEventsResponse = {
   generatedAt: number;
   viewerId: string;
   events: AdminRerankEvent[];
+};
+
+export type AdminAiDecisionAggregate = {
+  decisionKey?: string;
+  surface?: string;
+  stage?: string;
+  action?: string;
+  count: number;
+};
+
+export type AdminAiDecisionSurfaceAggregate = {
+  surface: string;
+  count: number;
+};
+
+export type AdminAiDecisionActionAggregate = {
+  action: string;
+  count: number;
+};
+
+export type AdminAiDecisionEvent = {
+  createdAt: number;
+  surface: string;
+  stage: string;
+  action: string;
+  accountId?: number;
+  targetAccountId?: number;
+  details?: Record<string, unknown>;
+};
+
+export type AdminAiDecisionsResponse = {
+  generatedAt: number;
+  totals?: {
+    decisions?: number;
+  };
+  byDecision?: AdminAiDecisionAggregate[];
+  bySurface?: AdminAiDecisionSurfaceAggregate[];
+  byAction?: AdminAiDecisionActionAggregate[];
+  events: AdminAiDecisionEvent[];
 };
 
 export type SignalConceptCandidateAction = 'create' | 'map' | 'reject' | 'block' | 'unblock';
@@ -1587,6 +1626,27 @@ export async function fetchAdminRerankEvents(
   }
   if (!('viewerId' in json) || !('events' in json) || !Array.isArray(json.events)) {
     throw new Error('Unexpected response from /api/accounts/{id}/admin/rerank-events');
+  }
+  return json;
+}
+
+export async function fetchAdminAiDecisions(
+  accountId: string,
+  token: string,
+  limit = 120
+): Promise<AdminAiDecisionsResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/admin/ai-decisions?limit=${limit}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  const json = (await res.json()) as AdminAiDecisionsResponse | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('events' in json) || !Array.isArray(json.events)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/admin/ai-decisions');
   }
   return json;
 }
