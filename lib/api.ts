@@ -427,6 +427,36 @@ export type AdminPairThresholds = {
   autoPass: number;
 };
 
+export type AdminPairStagingSnapshot = {
+  available: boolean;
+  present: boolean;
+  targetAccountId?: string;
+  status?: string;
+  holdReason?: string | null;
+  visibleMatch?: boolean;
+  rerankEvidence?: boolean;
+  stagingEntranceThreshold?: number;
+  stagingExitThreshold?: number;
+  escapeThreshold?: number;
+  deterministicScore?: number;
+  targetToViewerScore?: number;
+  mutualScore?: number;
+  effectiveScore?: number;
+  scoreAtRerank?: number;
+  rerankCount?: number;
+  lastRerankedAt?: number;
+  updatedAt?: number;
+  enteredAt?: number;
+  demotedAt?: number;
+  rerankInvalidatedAt?: number;
+  rerankRecommendedUse?: string | null;
+  rerankCompatibility?: number;
+  rerankConfidence?: number;
+  rerankReason?: string | null;
+  rerankCached?: boolean;
+  followupPending?: boolean;
+};
+
 export type AdminPairTopCandidate = {
   account: Account;
   scoreSource?: string;
@@ -477,6 +507,7 @@ export type AdminPairSnapshot = {
   targetPromptLikeSeen?: boolean;
   bothMeetMatchThreshold: boolean;
   bothMeetAutoPassThreshold: boolean;
+  staging?: AdminPairStagingSnapshot | null;
 };
 
 export type AdminPairScoreResponse = {

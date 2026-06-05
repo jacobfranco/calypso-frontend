@@ -52,9 +52,19 @@ function fmtDelta(value: number | null | undefined): string {
   return (value as number) >= 0 ? `+${rounded}` : rounded;
 }
 
+function fmtNumber(value: number | null | undefined, digits = 2): string {
+  if (!Number.isFinite(value)) return 'n/a';
+  return (value as number).toFixed(digits);
+}
+
 function fmtCount(value: number | null | undefined): string {
   if (!Number.isFinite(value)) return '0';
   return String(Math.round(value as number));
+}
+
+function fmtAdminTime(value: number | null | undefined): string {
+  if (!Number.isFinite(value) || (value as number) <= 0) return 'n/a';
+  return new Date(value as number).toLocaleTimeString();
 }
 
 function compactAdminValue(value: unknown, maxLength = 260): string {
@@ -1217,6 +1227,59 @@ export default function AdminScreen() {
                           pairScore.pair.bothMeetMatchThreshold ? 'yes' : 'no'
                         } pass_auto=${pairScore.pair.bothMeetAutoPassThreshold ? 'yes' : 'no'}`}
                       </ThemedText>
+                      {pairScore.pair.staging ? (
+                        <>
+                          <ThemedText style={styles.signalItemToken}>Match pipeline</ThemedText>
+                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                            {`staging=${pairScore.pair.staging.status ?? 'n/a'} available=${
+                              pairScore.pair.staging.available ? 'yes' : 'no'
+                            } present=${pairScore.pair.staging.present ? 'yes' : 'no'} visible=${
+                              pairScore.pair.staging.visibleMatch ? 'yes' : 'no'
+                            } rerank_evidence=${pairScore.pair.staging.rerankEvidence ? 'yes' : 'no'}`}
+                          </ThemedText>
+                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                            {`reason=${pairScore.pair.staging.holdReason ?? 'n/a'} followup_pending=${
+                              pairScore.pair.staging.followupPending ? 'yes' : 'no'
+                            }`}
+                          </ThemedText>
+                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                            {`thresholds entrance=${fmtNumber(
+                              pairScore.pair.staging.stagingEntranceThreshold
+                            )} exit=${fmtNumber(pairScore.pair.staging.stagingExitThreshold)} escape=${fmtNumber(
+                              pairScore.pair.staging.escapeThreshold
+                            )}`}
+                          </ThemedText>
+                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                            {`scores deterministic=${fmtNumber(
+                              pairScore.pair.staging.deterministicScore
+                            )} target_to_viewer=${fmtNumber(
+                              pairScore.pair.staging.targetToViewerScore
+                            )} mutual=${fmtNumber(pairScore.pair.staging.mutualScore)} effective=${fmtNumber(
+                              pairScore.pair.staging.effectiveScore
+                            )} score_at_rerank=${fmtNumber(pairScore.pair.staging.scoreAtRerank)}`}
+                          </ThemedText>
+                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                            {`rerank count=${fmtCount(pairScore.pair.staging.rerankCount)} use=${
+                              pairScore.pair.staging.rerankRecommendedUse ?? 'n/a'
+                            } cached=${pairScore.pair.staging.rerankCached ? 'yes' : 'no'} compatibility=${fmtNumber(
+                              pairScore.pair.staging.rerankCompatibility,
+                              3
+                            )} confidence=${fmtNumber(pairScore.pair.staging.rerankConfidence, 3)}`}
+                          </ThemedText>
+                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                            {`times entered=${fmtAdminTime(pairScore.pair.staging.enteredAt)} updated=${fmtAdminTime(
+                              pairScore.pair.staging.updatedAt
+                            )} reranked=${fmtAdminTime(
+                              pairScore.pair.staging.lastRerankedAt
+                            )} invalidated=${fmtAdminTime(pairScore.pair.staging.rerankInvalidatedAt)}`}
+                          </ThemedText>
+                          {pairScore.pair.staging.rerankReason ? (
+                            <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                              {`rerank_reason=${compactAdminText(pairScore.pair.staging.rerankReason, 180)}`}
+                            </ThemedText>
+                          ) : null}
+                        </>
+                      ) : null}
                     </View>
                   ) : null}
                 </>
