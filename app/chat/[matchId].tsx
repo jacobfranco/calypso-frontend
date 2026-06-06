@@ -18,6 +18,32 @@ import { useAuth } from '@/lib/auth';
 import { sendDirectMessage, fetchDirectMessages, DirectMessage } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
+function ChatAvatar({
+  uri,
+  name,
+  variant = 'message',
+}: {
+  uri?: string;
+  name?: string;
+  variant?: 'header' | 'message';
+}) {
+  const [error, setError] = useState(false);
+  const initials = (name ?? '?').trim().slice(0, 2).toUpperCase();
+  const avatarStyle = variant === 'header' ? styles.headerAvatar : styles.messageAvatar;
+  const initialsStyle =
+    variant === 'header' ? styles.headerAvatarInitials : styles.messageAvatarInitials;
+
+  if (error || !uri) {
+    return (
+      <View style={[avatarStyle, styles.avatarFallback]}>
+        <ThemedText style={initialsStyle}>{initials}</ThemedText>
+      </View>
+    );
+  }
+
+  return <Image source={{ uri }} style={avatarStyle} onError={() => setError(true)} />;
+}
+
 function formatTime(epochMillis: number): string {
   if (!epochMillis) return '';
   try {
@@ -25,6 +51,14 @@ function formatTime(epochMillis: number): string {
   } catch {
     return '';
   }
+}
+
+function normalizeAccountId(value: unknown): string {
+  if (typeof value !== 'string' && typeof value !== 'number') return '';
+  const raw = String(value).trim();
+  const accountPart = raw.endsWith('-a') ? raw.slice(0, -2) : raw;
+  const normalized = accountPart.replace(/^0+(?=\d)/, '');
+  return normalized || accountPart;
 }
 
 export default function ChatScreen() {
@@ -46,16 +80,19 @@ export default function ChatScreen() {
     { light: 'rgba(0, 0, 0, 0.10)', dark: 'rgba(255, 255, 255, 0.14)' },
     'icon'
   );
-  const cardBg = useThemeColor(
-    { light: 'rgba(0, 0, 0, 0.02)', dark: 'rgba(255, 255, 255, 0.04)' },
-    'background'
-  );
   const muted = useThemeColor(
     { light: 'rgba(0, 0, 0, 0.5)', dark: 'rgba(255, 255, 255, 0.5)' },
     'text'
   );
   const primaryBg = useThemeColor({ light: '#111', dark: '#f1f1f1' }, 'text');
   const primaryText = useThemeColor({ light: '#fff', dark: '#111' }, 'text');
+  const outgoingBubbleBg = useThemeColor({ light: '#0A84FF', dark: '#0A84FF' }, 'tint');
+  const outgoingText = '#fff';
+  const incomingBubbleBg = useThemeColor(
+    { light: '#F1F3F5', dark: '#2A2D31' },
+    'background'
+  );
+  const incomingText = useThemeColor({ light: '#11181C', dark: '#ECEDEE' }, 'text');
   const inputBorder = useThemeColor(
     { light: 'rgba(0,0,0,0.15)', dark: 'rgba(255,255,255,0.18)' },
     'icon'
@@ -100,7 +137,11 @@ export default function ChatScreen() {
     }
   }, [account, input, matchId, sending, token]);
 
-  const myId = account?.id ?? '';
+  const myId = normalizeAccountId(account?.id);
+  const matchName = name ? decodeURIComponent(name) : 'Match';
+  const matchAvatar = avatar ? decodeURIComponent(avatar) : undefined;
+  const myAvatar = account?.avatar_static ?? account?.avatar;
+  const myName = account?.name ?? 'You';
 
   return (
     <ThemedView style={styles.container}>
@@ -108,11 +149,9 @@ export default function ChatScreen() {
         <Pressable onPress={() => router.back()} style={styles.backButton} hitSlop={12}>
           <ThemedText style={styles.backArrow}>‹</ThemedText>
         </Pressable>
-        {avatar ? (
-          <Image source={{ uri: decodeURIComponent(avatar) }} style={styles.headerAvatar} />
-        ) : null}
+        <ChatAvatar uri={matchAvatar} name={matchName} variant="header" />
         <ThemedText type="defaultSemiBold" numberOfLines={1} style={styles.headerName}>
-          {name ? decodeURIComponent(name) : 'Chat'}
+          {matchName}
         </ThemedText>
       </View>
 
@@ -139,27 +178,44 @@ export default function ChatScreen() {
               </ThemedText>
             ) : null}
             {messages.map((msg) => {
-              const mine = msg.senderId === myId;
+              const mine = normalizeAccountId(msg.senderId) === myId;
+              const displayName = mine ? 'You' : matchName;
               return (
                 <View
                   key={msg.messageId}
-                  style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}
+                  style={[styles.messageRow, mine ? styles.messageRowMine : styles.messageRowTheirs]}
                 >
-                  <View
-                    style={[
-                      styles.bubbleBody,
-                      mine
-                        ? { backgroundColor: primaryBg }
-                        : { backgroundColor: cardBg, borderColor: cardBorder, borderWidth: 1 },
-                    ]}
-                  >
-                    <ThemedText style={[styles.bubbleText, mine && { color: primaryText }]}>
-                      {msg.text}
+                  {!mine ? <ChatAvatar uri={matchAvatar} name={matchName} /> : null}
+                  <View style={[styles.messageStack, mine ? styles.stackMine : styles.stackTheirs]}>
+                    <ThemedText style={[styles.senderLabel, { color: muted }]}>
+                      {displayName}
+                    </ThemedText>
+                    <View
+                      style={[
+                        styles.bubbleBody,
+                        mine
+                          ? { backgroundColor: outgoingBubbleBg }
+                          : {
+                              backgroundColor: incomingBubbleBg,
+                              borderColor: cardBorder,
+                              borderWidth: 1,
+                            },
+                      ]}
+                    >
+                      <ThemedText
+                        style={[
+                          styles.bubbleText,
+                          { color: mine ? outgoingText : incomingText },
+                        ]}
+                      >
+                        {msg.text}
+                      </ThemedText>
+                    </View>
+                    <ThemedText style={[styles.bubbleTime, { color: muted }]}>
+                      {formatTime(msg.sentAt)}
                     </ThemedText>
                   </View>
-                  <ThemedText style={[styles.bubbleTime, { color: muted }]}>
-                    {formatTime(msg.sentAt)}
-                  </ThemedText>
+                  {mine ? <ChatAvatar uri={myAvatar} name={myName} /> : null}
                 </View>
               );
             })}
@@ -214,6 +270,12 @@ const styles = StyleSheet.create({
     height: 36,
     borderRadius: 18,
     backgroundColor: 'rgba(0,0,0,0.08)',
+    flexShrink: 0,
+  },
+  headerAvatarInitials: {
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: '700',
   },
   headerName: { flex: 1, fontSize: 17 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
@@ -227,9 +289,42 @@ const styles = StyleSheet.create({
     marginTop: 40,
     fontSize: 14,
   },
-  bubble: { maxWidth: '78%' },
-  bubbleMine: { alignSelf: 'flex-end', alignItems: 'flex-end' },
-  bubbleTheirs: { alignSelf: 'flex-start', alignItems: 'flex-start' },
+  messageRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  messageRowMine: { justifyContent: 'flex-end' },
+  messageRowTheirs: { justifyContent: 'flex-start' },
+  messageStack: {
+    maxWidth: '74%',
+  },
+  stackMine: { alignItems: 'flex-end' },
+  stackTheirs: { alignItems: 'flex-start' },
+  messageAvatar: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.08)',
+    flexShrink: 0,
+  },
+  avatarFallback: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.12)',
+  },
+  messageAvatarInitials: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '700',
+  },
+  senderLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+    marginBottom: 3,
+    marginHorizontal: 4,
+  },
   bubbleBody: {
     borderRadius: 18,
     paddingVertical: 9,
