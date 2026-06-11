@@ -8,7 +8,6 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import { useFiltersDraft } from '@/lib/filters-draft';
-import { Importance } from '@/lib/api';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { formatTagLabel } from '@/lib/tag-labels';
 
@@ -16,9 +15,6 @@ const RELATIONSHIP_CATEGORY = { key: 'relationship', label: 'Relationship mode' 
 const GENDER_CATEGORY = { key: 'gender', label: 'Gender' };
 const AGE_CATEGORY = { key: 'age', label: 'Age' };
 const LOCATION_CATEGORY = { key: 'location', label: 'Location' };
-const RELIGION_CATEGORY = { key: 'religion', label: 'Religion' };
-const POLITICS_CATEGORY = { key: 'politics', label: 'Politics' };
-const LIFESTYLE_CATEGORY = { key: 'lifestyle', label: 'Lifestyle' };
 
 const COUNTRY_RADIUS_KM = 3000;
 const WORLDWIDE_RADIUS_KM = 30000;
@@ -28,18 +24,9 @@ const FILTER_CATEGORIES = [
   GENDER_CATEGORY,
   AGE_CATEGORY,
   LOCATION_CATEGORY,
-  RELIGION_CATEGORY,
-  POLITICS_CATEGORY,
-  LIFESTYLE_CATEGORY,
 ] as const;
 
 type FilterCategoryKey = (typeof FILTER_CATEGORIES)[number]['key'];
-
-const ALIGNMENT_IMPORTANCE_LABELS: Record<Importance, string> = {
-  NOT_IMPORTANT: 'Not important',
-  PREFERENCE: 'Nice to have',
-  DEALBREAKER: 'Important',
-};
 
 type FilterCategoryRowProps = {
   href: Href;
@@ -254,42 +241,11 @@ export default function FiltersIndexScreen() {
               ? `Lat ${filters.location.lat} · Lon ${filters.location.lon} · ${radiusValue}${radiusSuffix}`
               : `Lat ${filters.location.lat} · Lon ${filters.location.lon}`
             : 'Not set';
-    const religionSelf = filters.religion?.self
-      ? `Self: ${formatTagLabel(filters.religion.self)}`
-      : '';
-    const religionImportance = filters.religion?.importance
-      ? `Importance: ${ALIGNMENT_IMPORTANCE_LABELS[filters.religion.importance]}`
-      : '';
-    const religion = [religionSelf, religionImportance].filter(Boolean).join(' · ') || 'Not set';
-    const politicsSelf = filters.politics?.self
-      ? `Self: ${formatTagLabel(filters.politics.self)}`
-      : '';
-    const politicsImportance = filters.politics?.importance
-      ? `Importance: ${ALIGNMENT_IMPORTANCE_LABELS[filters.politics.importance]}`
-      : '';
-    const politics = [politicsSelf, politicsImportance].filter(Boolean).join(' · ') || 'Not set';
-    const lifestyle = filters.lifestyle?.self?.length || filters.lifestyle?.preferences?.length
-      ? [
-          filters.lifestyle?.self?.length
-            ? `Self: ${filters.lifestyle?.self?.map((tag) => formatTagLabel(tag)).join(', ')}`
-            : '',
-          filters.lifestyle?.preferences?.length
-            ? `Preferences: ${filters.lifestyle?.preferences
-              ?.map((pref) => formatTagLabel(pref.tag))
-              .join(', ')}`
-            : '',
-        ]
-          .filter(Boolean)
-          .join(' · ')
-      : 'Not set';
     return {
       relationship,
       gender,
       age,
       location,
-      religion,
-      politics,
-      lifestyle,
     };
   }, [ageSelf, draft, locationName]);
 

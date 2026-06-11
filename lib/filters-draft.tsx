@@ -40,9 +40,6 @@ function validateFilters(filters: Filters): string[] {
     missing.push('location (country)');
   }
 
-  if (!filters.religion?.self) missing.push('religion');
-  if (!filters.politics?.self) missing.push('politics');
-
   return missing;
 }
 

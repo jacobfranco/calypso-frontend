@@ -12,7 +12,6 @@ import {
   View,
 } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
-import * as Location from 'expo-location';
 import MultiSlider from '@ptomasroos/react-native-multi-slider';
 
 import { AgeRangeSlider } from '@/components/age-range-slider';
@@ -23,11 +22,15 @@ import { useAuth } from '@/lib/auth';
 import {
   Filters,
   Importance,
+  MatchStandardAnswerPayload,
+  MatchStandardQuestion,
   PromptDefinition,
-  TagPreference,
-  TagsResponse,
+  createPhoneAccount,
+  fetchMe,
+  fetchMatchStandardQuestions,
   fetchPublicPromptLibrary,
   fetchTags,
+  postMatchStandardAnswer,
   postFilters,
   postPublicPromptAnswer,
   postPublicPromptSelection,
@@ -44,6 +47,18 @@ import {
   upsertFacecardPhotoUriAtIndex,
 } from '@/lib/facecard-photos';
 import { pickPhotoFromLibrary } from '@/lib/image-picker';
+import type { AppLocationPermission } from '@/lib/location';
+import {
+  getCurrentLocationSnapshot,
+  getLocationErrorMessage,
+  getLocationPermissionStatus,
+  formatCoordinateInput,
+  formatCoordinateLabel,
+  normalizeCountryCodeInput,
+  parseLatitudeInput,
+  parseLongitudeInput,
+} from '@/lib/location';
+import { markMatchStandardQuestionsAnswered } from '@/lib/match-standards-progress';
 
 const STEPS = [
   'welcome',
@@ -52,11 +67,9 @@ const STEPS = [
   'name',
   'dob',
   'gender',
-  'religion',
-  'politics',
   'relationship',
-  'lifestyle',
   'location',
+  'matchStandard',
   'prompts',
   'photos',
 ] as const;
@@ -79,11 +92,24 @@ const WORLDWIDE_RADIUS_KM = 30000;
 const PROMPT_MIN_SELECTION = 1;
 const PROMPT_MAX_SELECTION = 5;
 const FACECARD_MIN_PHOTOS = 1;
+const MATCH_STANDARD_MIN_ANSWERS = 4;
+const RELIGION_MATCH_STANDARD_QUESTION_ID = 'standard.religion.identity';
+const KIDS_MATCH_STANDARD_QUESTION_ID = 'standard.kids.future';
 
-type LocationPermission = Location.PermissionStatus | 'unknown';
+type MatchStandardAnswerDraft = Omit<MatchStandardAnswerPayload, 'importance'> & {
+  importance: Importance | null;
+};
+
+function emptyMatchStandardAnswer(): MatchStandardAnswerDraft {
+  return {
+    ownAnswerOptionIds: [],
+    acceptableAnswerOptionIds: [],
+    importance: null,
+  };
+}
 
 export default function OnboardingScreen() {
-  const { completePhoneSignup, loginWithToken } = useAuth();
+  const { loginWithToken } = useAuth();
   const nameInputRef = useRef<TextInput>(null);
   const [stepIndex, setStepIndex] = useState(0);
   const step = STEPS[stepIndex];
@@ -95,31 +121,25 @@ export default function OnboardingScreen() {
   const [existingAccount, setExistingAccount] = useState(false);
   const [name, setName] = useState('');
   const [birthday, setBirthday] = useState<Date | null>(null);
+  const [birthdayInput, setBirthdayInput] = useState('');
   const [ageRange, setAgeRange] = useState<[number, number]>([MIN_AGE, MIN_AGE + 4]);
   const [gender, setGender] = useState('');
   const [genderSeeking, setGenderSeeking] = useState<string[]>([]);
-  const [religion, setReligion] = useState('');
-  const [religionImportance, setReligionImportance] = useState<Importance>('NOT_IMPORTANT');
-  const [politics, setPolitics] = useState('');
-  const [politicsImportance, setPoliticsImportance] = useState<Importance>('NOT_IMPORTANT');
   const [relationshipMode, setRelationshipMode] = useState('');
-  const [lifestyleSelections, setLifestyleSelections] = useState<string[]>([]);
-  const [lifestyleImportanceByGroup, setLifestyleImportanceByGroup] = useState<Record<string, Importance>>({});
   const [locationScope, setLocationScope] = useState<'nearby' | 'country' | 'worldwide'>('nearby');
   const [radiusUnit, setRadiusUnit] = useState<'mi' | 'km'>('mi');
   const [radiusValue, setRadiusValue] = useState(25);
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
+  const [latInput, setLatInput] = useState('');
+  const [lonInput, setLonInput] = useState('');
   const [countryCode, setCountryCode] = useState('');
   const [countryName, setCountryName] = useState('');
-  const [locationPermission, setLocationPermission] = useState<LocationPermission>('unknown');
+  const [locationPermission, setLocationPermission] = useState<AppLocationPermission>('unknown');
   const [locationName, setLocationName] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [genderOptions, setGenderOptions] = useState<string[]>([]);
-  const [religionOptions, setReligionOptions] = useState<string[]>([]);
-  const [politicsOptions, setPoliticsOptions] = useState<string[]>([]);
-  const [lifestyleTagGroups, setLifestyleTagGroups] = useState<TagsResponse | null>(null);
   const [promptLibrary, setPromptLibrary] = useState<PromptDefinition[]>([]);
   const [promptSelection, setPromptSelection] = useState<string[]>([]);
   const [promptAnswers, setPromptAnswers] = useState<Record<string, string>>({});
@@ -127,6 +147,10 @@ export default function OnboardingScreen() {
   const [promptError, setPromptError] = useState<string | null>(null);
   const [promptEditorPromptId, setPromptEditorPromptId] = useState<string | null>(null);
   const [promptEditorAnswer, setPromptEditorAnswer] = useState('');
+  const [matchStandardQuestions, setMatchStandardQuestions] = useState<MatchStandardQuestion[]>([]);
+  const [matchStandardLoading, setMatchStandardLoading] = useState(false);
+  const [matchStandardError, setMatchStandardError] = useState<string | null>(null);
+  const [matchStandardAnswers, setMatchStandardAnswers] = useState<Record<string, MatchStandardAnswerDraft>>({});
   const [facecardPhotoUris, setFacecardPhotoUris] = useState<string[]>([]);
   const [photoPicking, setPhotoPicking] = useState(false);
 
@@ -178,23 +202,12 @@ export default function OnboardingScreen() {
     let mounted = true;
     const loadTags = async () => {
       try {
-        const [genderTags, religionTags, politicsTags, lifestyleTagGroups] = await Promise.all([
-          fetchTags('gender'),
-          fetchTags('religion'),
-          fetchTags('politics'),
-          fetchTags('lifestyle'),
-        ]);
+        const genderTags = await fetchTags('gender');
         if (!mounted) return;
         setGenderOptions(Object.values(genderTags).flat());
-        setReligionOptions(Object.values(religionTags).flat());
-        setPoliticsOptions(Object.values(politicsTags).flat());
-        setLifestyleTagGroups(lifestyleTagGroups);
       } catch {
         if (!mounted) return;
         setGenderOptions([]);
-        setReligionOptions([]);
-        setPoliticsOptions([]);
-        setLifestyleTagGroups(null);
       }
     };
     loadTags();
@@ -202,25 +215,6 @@ export default function OnboardingScreen() {
       mounted = false;
     };
   }, []);
-
-  useEffect(() => {
-    let mounted = true;
-    const checkPermission = async () => {
-      if (step !== 'location') return;
-      try {
-        const { status } = await Location.getForegroundPermissionsAsync();
-        if (!mounted) return;
-        setLocationPermission(status);
-      } catch {
-        if (!mounted) return;
-        setLocationPermission('unknown');
-      }
-    };
-    checkPermission();
-    return () => {
-      mounted = false;
-    };
-  }, [step]);
 
   useEffect(() => {
     if (step !== 'name') return;
@@ -234,6 +228,10 @@ export default function OnboardingScreen() {
     if (!birthday) return null;
     return calculateAge(birthday);
   }, [birthday]);
+  const completedMatchStandardAnswerCount = useMemo(
+    () => Object.values(matchStandardAnswers).filter(isMatchStandardAnswerComplete).length,
+    [matchStandardAnswers]
+  );
 
   useEffect(() => {
     if (age === null) return;
@@ -270,6 +268,30 @@ export default function OnboardingScreen() {
     };
   }, [step]);
 
+  useEffect(() => {
+    if (step !== 'matchStandard') return;
+    let mounted = true;
+    setMatchStandardLoading(true);
+    setMatchStandardError(null);
+    fetchMatchStandardQuestions()
+      .then((questions) => {
+        if (!mounted) return;
+        setMatchStandardQuestions(questions.filter((question) => question.tags?.includes('starter')));
+      })
+      .catch((error) => {
+        if (!mounted) return;
+        setMatchStandardError(error instanceof Error ? error.message : 'Unable to load standards');
+        setMatchStandardQuestions([]);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setMatchStandardLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [step]);
+
   const canContinue = useMemo(() => {
     if (loading) return false;
     if (step === 'welcome') return true;
@@ -278,15 +300,16 @@ export default function OnboardingScreen() {
     if (step === 'name') return name.trim().length > 0;
     if (step === 'dob') return age !== null && age >= MIN_AGE;
     if (step === 'gender') return gender.length > 0;
-    if (step === 'religion') return religion.length > 0;
-    if (step === 'politics') return politics.length > 0;
     if (step === 'relationship') return relationshipMode.length > 0;
-    if (step === 'lifestyle') return true;
     if (step === 'location') {
       if (lat === null || lon === null) return false;
       if (locationScope === 'country' && !countryCode) return false;
       if (locationScope === 'nearby') return radiusValue >= RADIUS_MIN;
       return true;
+    }
+    if (step === 'matchStandard') {
+      if (matchStandardLoading) return false;
+      return completedMatchStandardAnswerCount >= MATCH_STANDARD_MIN_ANSWERS;
     }
     if (step === 'prompts') {
       if (promptLoading) return false;
@@ -310,6 +333,9 @@ export default function OnboardingScreen() {
   }, [
     age,
     code,
+    matchStandardAnswers,
+    matchStandardLoading,
+    completedMatchStandardAnswerCount,
     countryCode,
     facecardPhotoUris.length,
     gender,
@@ -319,33 +345,15 @@ export default function OnboardingScreen() {
     lon,
     name,
     phone,
-    politics,
     promptAnswers,
     promptEditorPromptId,
     promptLoading,
     promptSelection.length,
     photoPicking,
     radiusValue,
-    religion,
     relationshipMode,
     step,
   ]);
-
-  const buildLifestylePreferences = (): TagPreference[] => {
-    if (!lifestyleTagGroups) return [];
-    const selected = new Set(lifestyleSelections);
-    const prefs: TagPreference[] = [];
-    for (const [group, tags] of Object.entries(lifestyleTagGroups)) {
-      const importance = lifestyleImportanceByGroup[group] ?? 'NOT_IMPORTANT';
-      if (importance === 'NOT_IMPORTANT') continue;
-      for (const tag of tags) {
-        if (selected.has(tag)) {
-          prefs.push({ tag, importance });
-        }
-      }
-    }
-    return prefs;
-  };
 
   const openPromptEditor = (promptId: string) => {
     setMessage(null);
@@ -546,12 +554,14 @@ export default function OnboardingScreen() {
       }
       setLoading(true);
       try {
-        const { account, token } = await completePhoneSignup({
+        const tokenResponse = await createPhoneAccount({
           name: name.trim(),
           phone_number: phone.trim(),
-          birthday: birthday.toISOString().split('T')[0],
+          birthday: formatBirthdayDate(birthday),
           verification_token: verificationToken,
         });
+        const token = tokenResponse.access_token;
+        const account = await fetchMe(token);
         await saveFacecardPhotoUris(account.id, facecardPhotoUris);
 
         const [minAge, maxAge] = ageRange;
@@ -577,8 +587,6 @@ export default function OnboardingScreen() {
             self: gender,
             seeking: genderSeeking.length ? genderSeeking : undefined,
           },
-          religion: { self: religion, importance: religionImportance },
-          politics: { self: politics, importance: politicsImportance },
           age: {
             self: age,
             min: minAge,
@@ -594,15 +602,20 @@ export default function OnboardingScreen() {
           countryCode: countryCode || undefined,
           distanceUnit,
         };
-        const lifestylePreferences = buildLifestylePreferences();
-        if (lifestyleSelections.length || lifestylePreferences.length) {
-          filtersPayload.lifestyle = {
-            self: lifestyleSelections.length ? lifestyleSelections : undefined,
-            preferences: lifestylePreferences.length ? lifestylePreferences : undefined,
-          };
-        }
 
         await postFilters(account.id, token, filtersPayload);
+
+        const completedMatchStandardEntries = Object.entries(matchStandardAnswers).flatMap(([questionId, payload]) =>
+          isMatchStandardAnswerComplete(payload) ? [[questionId, payload] as const] : []
+        );
+        const matchStandardResponses = completedMatchStandardEntries.map(([questionId, payload]) =>
+          postMatchStandardAnswer(account.id, token, questionId, matchStandardPayload(payload))
+        );
+        await Promise.all(matchStandardResponses);
+        await markMatchStandardQuestionsAnswered(
+          account.id,
+          completedMatchStandardEntries.map(([questionId]) => questionId)
+        );
 
         const responses = promptSelection.map((promptId) => {
           const body = (promptAnswers[promptId] ?? '').trim();
@@ -610,6 +623,7 @@ export default function OnboardingScreen() {
         });
         await Promise.all(responses);
         await postPublicPromptSelection(account.id, token, promptSelection);
+        await loginWithToken(token);
       } catch (error) {
         const messageText =
           error instanceof Error ? error.message : 'Unable to finish onboarding';
@@ -631,44 +645,58 @@ export default function OnboardingScreen() {
   const handleDateChange = (_event: DateTimePickerEvent, selected?: Date) => {
     if (selected) {
       setBirthday(selected);
+      setBirthdayInput(formatBirthdayDate(selected));
     }
+  };
+
+  const handleBirthdayInputChange = (text: string) => {
+    setBirthdayInput(text);
+    setBirthday(parseBirthdayInput(text));
   };
 
   const handleUseLocation = useCallback(async () => {
     setMessage(null);
     setLoading(true);
     try {
-      let { status } = await Location.getForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        const request = await Location.requestForegroundPermissionsAsync();
-        status = request.status;
-      }
-      setLocationPermission(status);
-      if (status !== 'granted') {
-        setMessage('Location is required to use the app. Please enable location services.');
-        return;
-      }
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      setLat(position.coords.latitude);
-      setLon(position.coords.longitude);
-      const results = await Location.reverseGeocodeAsync({
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-      });
-      const top = results[0];
-      setLocationName(top ? formatPlacemark(top) : '');
-      setCountryCode(top?.isoCountryCode ? top.isoCountryCode.toUpperCase() : '');
-      setCountryName(top?.country ?? '');
+      const location = await getCurrentLocationSnapshot();
+      setLocationPermission(location.permissionStatus);
+      setLat(location.latitude);
+      setLon(location.longitude);
+      setLatInput(formatCoordinateInput(location.latitude));
+      setLonInput(formatCoordinateInput(location.longitude));
+      setLocationName(location.locationName);
+      setCountryCode(location.countryCode);
+      setCountryName(location.countryName);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Unable to get location');
-      setCountryCode('');
-      setCountryName('');
+      setLocationPermission(getLocationPermissionStatus(error));
+      setMessage(getLocationErrorMessage(error));
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const handleManualLatChange = (text: string) => {
+    setLatInput(text);
+    const nextLat = parseLatitudeInput(text);
+    setLat(nextLat);
+    if (nextLat !== null && lon !== null) {
+      setLocationName(formatCoordinateLabel(nextLat, lon));
+    }
+  };
+
+  const handleManualLonChange = (text: string) => {
+    setLonInput(text);
+    const nextLon = parseLongitudeInput(text);
+    setLon(nextLon);
+    if (lat !== null && nextLon !== null) {
+      setLocationName(formatCoordinateLabel(lat, nextLon));
+    }
+  };
+
+  const handleCountryCodeChange = (text: string) => {
+    setCountryCode(normalizeCountryCodeInput(text));
+    setCountryName('');
+  };
 
   useEffect(() => {
     if (step !== 'location') return;
@@ -691,11 +719,9 @@ export default function OnboardingScreen() {
     if (step === 'name') return 'Name';
     if (step === 'dob') return 'Age';
     if (step === 'gender') return 'Gender';
-    if (step === 'religion') return 'Religion';
-    if (step === 'politics') return 'Politics';
     if (step === 'relationship') return 'Relationship mode';
-    if (step === 'lifestyle') return 'Lifestyle';
     if (step === 'location') return 'Where are you';
+    if (step === 'matchStandard') return 'Standards';
     if (step === 'prompts' && promptEditorPromptId) return 'Answer prompt';
     if (step === 'prompts') return 'Pick prompts';
     if (step === 'photos') return 'Add facecard photos';
@@ -706,6 +732,70 @@ export default function OnboardingScreen() {
     step === 'prompts'
     && promptEditorPromptId !== null
     && promptLibrary.some((prompt) => prompt.promptId === promptEditorPromptId);
+
+  const updateMatchStandardOwnAnswer = (
+    question: MatchStandardQuestion,
+    optionId: string
+  ) => {
+    setMatchStandardAnswers((prev) => {
+      const current = prev[question.questionId] ?? emptyMatchStandardAnswer();
+      const singleChoice = question.answerType === 'SINGLE_CHOICE';
+      const nextOwn = nextOwnAnswerSelection(
+        question.questionId,
+        singleChoice,
+        current.ownAnswerOptionIds,
+        optionId
+      );
+      const selfMatchOnly = question.questionId === RELIGION_MATCH_STANDARD_QUESTION_ID;
+      return {
+        ...prev,
+        [question.questionId]: {
+          ...current,
+          ownAnswerOptionIds: nextOwn,
+          acceptableAnswerOptionIds: selfMatchOnly
+            && current.importance !== null
+            && current.importance !== 'NOT_IMPORTANT'
+            ? nextOwn
+            : current.acceptableAnswerOptionIds,
+        },
+      };
+    });
+  };
+
+  const toggleMatchStandardAcceptable = (question: MatchStandardQuestion, optionId: string) => {
+    setMatchStandardAnswers((prev) => {
+      const current = prev[question.questionId] ?? emptyMatchStandardAnswer();
+      const acceptable = current.acceptableAnswerOptionIds.includes(optionId)
+        ? current.acceptableAnswerOptionIds.filter((item) => item !== optionId)
+        : [...current.acceptableAnswerOptionIds, optionId];
+      return {
+        ...prev,
+        [question.questionId]: {
+          ...current,
+          acceptableAnswerOptionIds: acceptable,
+        },
+      };
+    });
+  };
+
+  const setMatchStandardImportance = (question: MatchStandardQuestion, importance: Importance) => {
+    setMatchStandardAnswers((prev) => {
+      const current = prev[question.questionId] ?? emptyMatchStandardAnswer();
+      const selfMatchOnly = question.questionId === RELIGION_MATCH_STANDARD_QUESTION_ID;
+      return {
+        ...prev,
+        [question.questionId]: {
+          ...current,
+          importance,
+          acceptableAnswerOptionIds: selfMatchOnly
+            ? importance === 'NOT_IMPORTANT'
+              ? []
+              : current.ownAnswerOptionIds
+            : current.acceptableAnswerOptionIds,
+        },
+      };
+    });
+  };
 
   const renderStepContent = () => {
     if (step === 'welcome') {
@@ -793,14 +883,28 @@ export default function OnboardingScreen() {
       return (
         <View style={styles.section}>
           <ThemedText style={[styles.label, { color: muted }]}>Date of birth</ThemedText>
-          <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-            <DateTimePicker
-              value={birthday ?? defaultBirthday()}
-              mode="date"
-              display="spinner"
-              onChange={handleDateChange}
+          {Platform.OS === 'web' ? (
+            <TextInput
+              {...({ type: 'date' } as unknown as Partial<React.ComponentProps<typeof TextInput>>)}
+              value={birthdayInput}
+              onChangeText={handleBirthdayInputChange}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={placeholderColor}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="numbers-and-punctuation"
+              style={[styles.input, { borderColor, backgroundColor: inputBg, color: inputText }]}
             />
-          </View>
+          ) : (
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <DateTimePicker
+                value={birthday ?? defaultBirthday()}
+                mode="date"
+                display="spinner"
+                onChange={handleDateChange}
+              />
+            </View>
+          )}
           <AgeRangeSlider
             values={ageRange}
             minAge={MIN_AGE}
@@ -859,80 +963,6 @@ export default function OnboardingScreen() {
       );
     }
 
-    if (step === 'religion') {
-      const options = religionOptions.length ? religionOptions : ['prefer_not_to_say'];
-      return (
-        <View style={styles.section}>
-          <ThemedText style={[styles.label, { color: muted }]}>Select your religion</ThemedText>
-          <View style={styles.optionRow}>
-            {options.map((option) => (
-              <OptionPill
-                key={option}
-                label={formatTagLabel(option)}
-                selected={religion === option}
-                onPress={() => setReligion(option)}
-                borderColor={borderColor}
-                activeBg={cardBg}
-              />
-            ))}
-          </View>
-          <ThemedText style={[styles.label, { color: muted }]}>
-            How important is religious alignment?
-          </ThemedText>
-          <View style={styles.optionRow}>
-            {ALIGNMENT_IMPORTANCE_OPTIONS.map((option) => (
-              <OptionPill
-                key={option.value}
-                label={option.label}
-                selected={religionImportance === option.value}
-                onPress={() => setReligionImportance(option.value)}
-                borderColor={borderColor}
-                activeBg={cardBg}
-              />
-            ))}
-          </View>
-        </View>
-      );
-    }
-
-    if (step === 'politics') {
-      const options = politicsOptions.length
-        ? politicsOptions
-        : ['apolitical', 'prefer_not_to_say'];
-      return (
-        <View style={styles.section}>
-          <ThemedText style={[styles.label, { color: muted }]}>Select your politics</ThemedText>
-          <View style={styles.optionRow}>
-            {options.map((option) => (
-              <OptionPill
-                key={option}
-                label={formatTagLabel(option)}
-                selected={politics === option}
-                onPress={() => setPolitics(option)}
-                borderColor={borderColor}
-                activeBg={cardBg}
-              />
-            ))}
-          </View>
-          <ThemedText style={[styles.label, { color: muted }]}>
-            How important is political alignment?
-          </ThemedText>
-          <View style={styles.optionRow}>
-            {ALIGNMENT_IMPORTANCE_OPTIONS.map((option) => (
-              <OptionPill
-                key={option.value}
-                label={option.label}
-                selected={politicsImportance === option.value}
-                onPress={() => setPoliticsImportance(option.value)}
-                borderColor={borderColor}
-                activeBg={cardBg}
-              />
-            ))}
-          </View>
-        </View>
-      );
-    }
-
     if (step === 'relationship') {
       return (
         <View style={styles.section}>
@@ -949,7 +979,7 @@ export default function OnboardingScreen() {
             ))}
           </View>
           <ThemedText style={[styles.mutedText, { color: muted }]}>
-            Focused: fewer matches, higher compatibility.{'\n'}
+            Focused: fewer matches, higher standards fit.{'\n'}
             Balanced: moderate volume, moderate threshold.{'\n'}
             Exploratory: wider net, lower threshold.
           </ThemedText>
@@ -957,72 +987,8 @@ export default function OnboardingScreen() {
       );
     }
 
-    if (step === 'lifestyle') {
-      const lifestyleGroups = lifestyleTagGroups ? Object.entries(lifestyleTagGroups) : [];
-      return (
-        <View style={styles.section}>
-          <ThemedText style={[styles.label, { color: muted }]}>
-            Select your lifestyle preferences (optional)
-          </ThemedText>
-          {lifestyleGroups.map(([group, options]) => {
-            const groupImportance = lifestyleImportanceByGroup[group] ?? 'NOT_IMPORTANT';
-            return (
-              <View
-                key={group}
-                style={[
-                  styles.groupBlock,
-                  { borderColor: cardBorder, backgroundColor: cardBg },
-                ]}
-              >
-                <ThemedText style={[styles.groupTitle, { color: muted }]}>
-                  {formatTagGroupLabel(group)}
-                </ThemedText>
-                <View style={styles.optionRow}>
-                  {options.map((option) => (
-                    <OptionPill
-                      key={option}
-                      label={formatTagLabel(option)}
-                      selected={lifestyleSelections.includes(option)}
-                      onPress={() =>
-                        setLifestyleSelections((prev) => {
-                          const alreadySelected = prev.includes(option);
-                          const withoutGroup = prev.filter((tag) => !options.includes(tag));
-                          return alreadySelected ? withoutGroup : [...withoutGroup, option];
-                        })
-                      }
-                      borderColor={borderColor}
-                      activeBg={cardBg}
-                    />
-                  ))}
-                </View>
-                <ThemedText style={[styles.label, { color: muted }]}>
-                  How important is it that your partner matches these?
-                </ThemedText>
-                <View style={styles.optionRow}>
-                  {ALIGNMENT_IMPORTANCE_OPTIONS.map((option) => (
-                    <OptionPill
-                      key={option.value}
-                      label={option.label}
-                      selected={groupImportance === option.value}
-                      onPress={() =>
-                        setLifestyleImportanceByGroup((prev) => ({
-                          ...prev,
-                          [group]: option.value,
-                        }))
-                      }
-                      borderColor={borderColor}
-                      activeBg={cardBg}
-                    />
-                  ))}
-                </View>
-              </View>
-            );
-          })}
-        </View>
-      );
-    }
-
     if (step === 'location') {
+      const showManualLocationFields = Platform.OS === 'web' || Boolean(message);
       return (
         <View style={styles.section}>
           <ThemedText style={[styles.label, { color: muted }]}>Location</ThemedText>
@@ -1058,6 +1024,61 @@ export default function OnboardingScreen() {
               {locationLabel}
             </ThemedText>
           </Pressable>
+          {showManualLocationFields ? (
+            <View style={[styles.groupBlock, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <ThemedText style={[styles.groupTitle, { color: muted }]}>Manual location</ThemedText>
+              <View style={styles.manualLocationRow}>
+                <View style={styles.manualLocationField}>
+                  <ThemedText style={[styles.label, { color: muted }]}>Latitude</ThemedText>
+                  <TextInput
+                    value={latInput}
+                    onChangeText={handleManualLatChange}
+                    placeholder="40.7128"
+                    placeholderTextColor={placeholderColor}
+                    keyboardType="numbers-and-punctuation"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={[
+                      styles.input,
+                      { borderColor, backgroundColor: inputBg, color: inputText },
+                    ]}
+                  />
+                </View>
+                <View style={styles.manualLocationField}>
+                  <ThemedText style={[styles.label, { color: muted }]}>Longitude</ThemedText>
+                  <TextInput
+                    value={lonInput}
+                    onChangeText={handleManualLonChange}
+                    placeholder="-74.006"
+                    placeholderTextColor={placeholderColor}
+                    keyboardType="numbers-and-punctuation"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={[
+                      styles.input,
+                      { borderColor, backgroundColor: inputBg, color: inputText },
+                    ]}
+                  />
+                </View>
+              </View>
+              <View style={styles.manualLocationField}>
+                <ThemedText style={[styles.label, { color: muted }]}>Country code</ThemedText>
+                <TextInput
+                  value={countryCode}
+                  onChangeText={handleCountryCodeChange}
+                  placeholder="US"
+                  placeholderTextColor={placeholderColor}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  maxLength={2}
+                  style={[
+                    styles.input,
+                    { borderColor, backgroundColor: inputBg, color: inputText },
+                  ]}
+                />
+              </View>
+            </View>
+          ) : null}
           {locationScope === 'nearby' && (
             <View style={styles.sliderBlock}>
               <View style={styles.sliderHeader}>
@@ -1105,6 +1126,116 @@ export default function OnboardingScreen() {
               Search is global, no radius needed.
             </ThemedText>
           )}
+        </View>
+      );
+    }
+
+    if (step === 'matchStandard') {
+      return (
+        <View style={styles.section}>
+          <ThemedText style={[styles.label, { color: muted }]}>
+            Set at least {MATCH_STANDARD_MIN_ANSWERS} starter standards
+          </ThemedText>
+          <ThemedText style={[styles.helperText, { color: muted }]}>
+            {completedMatchStandardAnswerCount}/{MATCH_STANDARD_MIN_ANSWERS} answered
+          </ThemedText>
+          {matchStandardLoading && (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator />
+              <ThemedText style={[styles.mutedText, { color: muted }]}>
+                Loading questions…
+              </ThemedText>
+            </View>
+          )}
+          {matchStandardError ? (
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <ThemedText style={[styles.mutedText, { color: muted }]}>
+                {matchStandardError}
+              </ThemedText>
+            </View>
+          ) : null}
+          {!matchStandardLoading && !matchStandardError && matchStandardQuestions.length === 0 ? (
+            <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+              <ThemedText style={[styles.mutedText, { color: muted }]}>
+                No standards are available right now.
+              </ThemedText>
+            </View>
+          ) : null}
+          {!matchStandardLoading && !matchStandardError ? (
+            matchStandardQuestions.map((question) => {
+              const answer = matchStandardAnswers[question.questionId] ?? emptyMatchStandardAnswer();
+              const selfMatchOnly = question.questionId === RELIGION_MATCH_STANDARD_QUESTION_ID;
+              return (
+                <View
+                  key={question.questionId}
+                  style={[styles.groupBlock, { borderColor: cardBorder, backgroundColor: cardBg }]}
+                >
+                  <ThemedText style={[styles.groupTitle, { color: muted }]}>
+                    {formatTagGroupLabel(question.category)}
+                  </ThemedText>
+                  <ThemedText type="defaultSemiBold">{question.text}</ThemedText>
+                  <ThemedText style={[styles.label, { color: muted }]}>My answer</ThemedText>
+                  <View style={styles.optionRow}>
+                    {question.options.map((option) => (
+                      <OptionPill
+                        key={option.optionId}
+                        label={option.text}
+                        selected={Boolean(answer?.ownAnswerOptionIds.includes(option.optionId))}
+                        onPress={() => updateMatchStandardOwnAnswer(question, option.optionId)}
+                        borderColor={borderColor}
+                        activeBg={primaryBg}
+                        activeText={primaryText}
+                      />
+                    ))}
+                  </View>
+                  {!selfMatchOnly ? (
+                    <>
+                      <ThemedText style={[styles.label, { color: muted }]}>
+                        Partner answers that work for me
+                      </ThemedText>
+                      <View style={styles.optionRow}>
+                        {question.options.map((option) => (
+                          <OptionPill
+                            key={`acceptable-${option.optionId}`}
+                            label={option.text}
+                            selected={answer.acceptableAnswerOptionIds.includes(option.optionId)}
+                            onPress={() => toggleMatchStandardAcceptable(question, option.optionId)}
+                            borderColor={borderColor}
+                            activeBg={primaryBg}
+                            activeText={primaryText}
+                          />
+                        ))}
+                      </View>
+                    </>
+                  ) : null}
+                  <ThemedText style={[styles.label, { color: muted }]}>
+                    {selfMatchOnly ? 'Should my partner share this?' : 'How much this matters'}
+                  </ThemedText>
+                  <View style={styles.optionRow}>
+                    {ALIGNMENT_IMPORTANCE_OPTIONS.map((option) => (
+                      <OptionPill
+                        key={option.value}
+                        label={option.label}
+                        selected={answer.importance === option.value}
+                        onPress={() => setMatchStandardImportance(question, option.value)}
+                        borderColor={borderColor}
+                        activeBg={primaryBg}
+                        activeText={primaryText}
+                      />
+                    ))}
+                  </View>
+                  {!selfMatchOnly
+                    && answer.importance !== null
+                    && answer.importance !== 'NOT_IMPORTANT'
+                    && answer.acceptableAnswerOptionIds.length === 0 ? (
+                    <ThemedText style={[styles.helperText, { color: muted }]}>
+                      Pick at least one partner answer that works for you.
+                    </ThemedText>
+                  ) : null}
+                </View>
+              );
+            })
+          ) : null}
         </View>
       );
     }
@@ -1374,12 +1505,14 @@ function OptionPill({
   onPress,
   borderColor,
   activeBg,
+  activeText,
 }: {
   label: string;
   selected: boolean;
   onPress: () => void;
   borderColor: string;
   activeBg: string;
+  activeText?: string;
 }) {
   return (
     <Pressable
@@ -1387,10 +1520,16 @@ function OptionPill({
       style={[
         styles.optionPill,
         { borderColor },
-        selected && { backgroundColor: activeBg },
+        selected && { backgroundColor: activeBg, borderColor: activeBg },
       ]}
     >
-      <ThemedText style={[styles.optionPillText, selected && styles.optionPillTextActive]}>
+      <ThemedText
+        style={[
+          styles.optionPillText,
+          selected && styles.optionPillTextActive,
+          selected && activeText ? { color: activeText } : null,
+        ]}
+      >
         {label}
       </ThemedText>
     </Pressable>
@@ -1412,20 +1551,35 @@ function defaultBirthday(): Date {
   return new Date(today.getFullYear() - MIN_AGE, today.getMonth(), today.getDate());
 }
 
+function formatBirthdayDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseBirthdayInput(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
 function defaultAgeRange(age: number): [number, number] {
   const min = Math.max(MIN_AGE, age - 4);
   const max = Math.min(MAX_AGE, age + 4);
   return [min, Math.max(min, max)];
-}
-
-function formatPlacemark(placemark: Location.LocationGeocodedAddress) {
-  const city = placemark.city || placemark.subregion || '';
-  const region = placemark.region || '';
-  const country = placemark.country || '';
-  if (city && region) return `${city}, ${region}`;
-  if (city) return city;
-  if (region) return region;
-  return country;
 }
 
 function capitalize(value: string) {
@@ -1437,6 +1591,50 @@ function toggleItem(list: string[], value: string) {
     return list.filter((item) => item !== value);
   }
   return [...list, value];
+}
+
+function nextOwnAnswerSelection(
+  questionId: string,
+  singleChoice: boolean,
+  current: string[],
+  optionId: string
+): string[] {
+  if (singleChoice) return [optionId];
+  if (current.includes(optionId)) {
+    return current.filter((item) => item !== optionId);
+  }
+  if (questionId !== KIDS_MATCH_STANDARD_QUESTION_ID) {
+    return [...current, optionId];
+  }
+  const exclusiveGroups = [
+    ['has_kids', 'no_kids'],
+    ['wants_kids', 'open_to_kids', 'not_sure', 'doesnt_want_kids'],
+  ];
+  const group = exclusiveGroups.find((items) => items.includes(optionId));
+  if (!group) return [...current, optionId];
+  return [...current.filter((item) => !group.includes(item)), optionId];
+}
+
+function isMatchStandardAnswerComplete(
+  payload: MatchStandardAnswerDraft | null | undefined
+): payload is MatchStandardAnswerDraft & { importance: Importance } {
+  if (!payload) return false;
+  if (!payload.ownAnswerOptionIds.length) return false;
+  if (payload.importance === null) return false;
+  if (payload.importance !== 'NOT_IMPORTANT' && !payload.acceptableAnswerOptionIds.length) {
+    return false;
+  }
+  return true;
+}
+
+function matchStandardPayload(
+  payload: MatchStandardAnswerDraft & { importance: Importance }
+): MatchStandardAnswerPayload {
+  return {
+    ownAnswerOptionIds: payload.ownAnswerOptionIds,
+    acceptableAnswerOptionIds: payload.acceptableAnswerOptionIds,
+    importance: payload.importance,
+  };
 }
 
 const styles = StyleSheet.create({
@@ -1500,6 +1698,14 @@ const styles = StyleSheet.create({
   groupTitle: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  manualLocationRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  manualLocationField: {
+    flex: 1,
+    gap: 6,
   },
   card: {
     borderRadius: 16,

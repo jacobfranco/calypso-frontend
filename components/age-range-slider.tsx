@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { StyleProp, TextStyle, View, ViewStyle } from 'react-native';
+import { StyleProp, StyleSheet, TextStyle, View, ViewStyle } from 'react-native';
 import MultiSlider from '@ptomasroos/react-native-multi-slider';
 
 import { ThemedText } from '@/components/themed-text';
@@ -105,8 +105,8 @@ export function AgeRangeSlider({
         selectedStyle={{ backgroundColor: selectedColor }}
         unselectedStyle={{ backgroundColor: unselectedColor }}
         markerStyle={{ backgroundColor: selectedColor, borderColor: markerBorderColor }}
-        trackStyle={trackStyle}
-        containerStyle={containerStyle}
+        trackStyle={StyleSheet.flatten(trackStyle)}
+        containerStyle={StyleSheet.flatten(containerStyle)}
       />
     </View>
   );

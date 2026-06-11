@@ -63,12 +63,46 @@ export type Filters = {
   gender?: OneToManyFilter;
   age?: RangeFilter;
   location?: LocationFilter;
-  religion?: OneToManyFilter;
-  politics?: OneToManyFilter;
-  lifestyle?: ManyToManyFilter;
 };
 
 export type TagsResponse = Record<string, string[]>;
+
+export type MatchStandardQuestionAnswerType = 'SINGLE_CHOICE' | 'MULTI_CHOICE';
+
+export type MatchStandardOption = {
+  optionId: string;
+  text: string;
+};
+
+export type MatchStandardQuestion = {
+  questionId: string;
+  category: string;
+  text: string;
+  answerType: MatchStandardQuestionAnswerType;
+  options: MatchStandardOption[];
+  version?: number;
+  tags?: string[];
+};
+
+export type MatchStandardAnswer = {
+  accountId: number;
+  questionId: string;
+  ownAnswerOptionIds: string[];
+  acceptableAnswerOptionIds: string[];
+  importance: Importance;
+  updatedAt: number;
+};
+
+export type MatchStandardAnswerSet = {
+  accountId: number;
+  answers?: MatchStandardAnswer[];
+};
+
+export type MatchStandardAnswerPayload = {
+  ownAnswerOptionIds: string[];
+  acceptableAnswerOptionIds: string[];
+  importance: Importance;
+};
 
 export type PromptDefinition = {
   promptId: string;
@@ -168,22 +202,48 @@ export type MatchScorerDebug = {
   sharedSelfOverlap?: number;
   signalAlignment?: number;
   profileSignalBlend?: number;
+  matchStandardScore?: number;
+  matchStandardSharedCount?: number;
+  matchStandardCoverage?: number;
+  matchStandardKnownDealbreakerConflicts?: number;
+  matchStandardUnknownImportantCount?: number;
+  matchStandardKnownSoftConflicts?: number;
   viewerReactionScore?: number;
   targetReactionScore?: number;
   targetInterestScore?: number;
   noveltyScore?: number;
+  resonanceAlignment?: number;
+  resonanceSharedCount?: number;
+  resonanceDelta?: number;
+  finalScoreBeforeResonance?: number;
   finalScore?: number;
   tier2Score?: number;
   tier2Normalized?: number;
   tier3Compatibility?: number;
+  tier3Spark?: number;
+  tier3Sustainability?: number;
+  tier3LearningValue?: number;
   tier3Confidence?: number;
   tier3AppliedWeight?: number;
+  tier3RecommendedUse?: string;
   tier3HardBlocker?: boolean;
   tier3Reason?: string;
   tier3Applied?: boolean;
   tier3Surface?: string;
   tier3Cached?: boolean;
   tier3ScoreSource?: string;
+  tier3Pending?: boolean;
+  tier3PendingReason?: string;
+  tier3BestModePair?: {
+    viewerModeId?: string;
+    candidateModeId?: string;
+    canonicalOrientation?: boolean;
+  };
+  viewerSilhouetteMaturity?: string;
+  viewerSilhouetteModeCount?: number;
+  candidateSilhouetteMaturity?: string;
+  candidateSilhouetteModeCount?: number;
+  targetToViewerScoreAtRerank?: number;
   scoreBeforeTier3?: number;
   scoreAfterTier3?: number;
 };
@@ -510,11 +570,26 @@ export type AdminPairSnapshot = {
   staging?: AdminPairStagingSnapshot | null;
 };
 
+export type AdminPairRawCandidate = {
+  targetAccountId: string;
+  score: number;
+  computedAt?: number;
+  reasons?: string[];
+  scorerDebug?: MatchScorerDebug;
+};
+
+export type AdminPairHeapSnapshot = {
+  rawCandidateCount: number;
+  hydratedCandidateCount: number;
+  rawTopCandidates: AdminPairRawCandidate[];
+};
+
 export type AdminPairScoreResponse = {
   generatedAt: number;
   viewerId: string;
   viewerMode: string;
   viewerThresholds: AdminPairThresholds;
+  heap?: AdminPairHeapSnapshot;
   topCandidates: AdminPairTopCandidate[];
   pair?: AdminPairSnapshot | null;
 };
@@ -910,6 +985,89 @@ export async function fetchTags(kind: string): Promise<TagsResponse> {
     throw new Error(extractErrorMessage(json, res.status));
   }
   return json as TagsResponse;
+}
+
+export async function fetchMatchStandardQuestions(): Promise<MatchStandardQuestion[]> {
+  const res = await fetch(`${API_BASE_URL}/api/match-standards/questions`);
+  const json = (await res.json()) as MatchStandardQuestion[] | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!Array.isArray(json)) {
+    throw new Error('Unexpected response from /api/match-standards/questions');
+  }
+  return json;
+}
+
+export async function fetchMatchStandardAnswers(
+  accountId: string,
+  token: string
+): Promise<MatchStandardAnswerSet> {
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/match-standards/answers`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  const json = (await res.json()) as MatchStandardAnswerSet | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('accountId' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/match-standards/answers');
+  }
+  return json;
+}
+
+export async function postMatchStandardAnswer(
+  accountId: string,
+  token: string,
+  questionId: string,
+  payload: MatchStandardAnswerPayload
+): Promise<MatchStandardAnswer> {
+  const res = await fetch(
+    `${API_BASE_URL}/api/accounts/${accountId}/match-standards/answers/${questionId}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+  const json = (await res.json()) as MatchStandardAnswer | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('questionId' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/match-standards/answers/{questionId}');
+  }
+  return json;
+}
+
+export async function fetchNextMatchStandardQuestion(
+  accountId: string,
+  token: string,
+  params: { category?: string; starter?: boolean } = {}
+): Promise<MatchStandardQuestion | null> {
+  const query = new URLSearchParams();
+  if (params.category) query.set('category', params.category);
+  if (params.starter) query.set('starter', 'true');
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const res = await fetch(`${API_BASE_URL}/api/accounts/${accountId}/match-standards/next${suffix}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  if (res.status === 404) return null;
+  const json = (await res.json()) as MatchStandardQuestion | ErrorDetails;
+  if (!res.ok) {
+    throw new Error(extractErrorMessage(json, res.status));
+  }
+  if (!('questionId' in json)) {
+    throw new Error('Unexpected response from /api/accounts/{id}/match-standards/next');
+  }
+  return json;
 }
 
 export async function fetchPublicPromptLibrary(): Promise<PromptDefinition[]> {

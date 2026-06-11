@@ -1,5 +1,6 @@
-import { View, type ViewProps } from 'react-native';
+import { View, type ViewProps, type ViewStyle } from 'react-native';
 
+import { flattenStyle } from '@/components/style-utils';
 import { useThemeColor } from '@/hooks/use-theme-color';
 
 export type ThemedViewProps = ViewProps & {
@@ -9,6 +10,7 @@ export type ThemedViewProps = ViewProps & {
 
 export function ThemedView({ style, lightColor, darkColor, ...otherProps }: ThemedViewProps) {
   const backgroundColor = useThemeColor({ light: lightColor, dark: darkColor }, 'background');
+  const resolvedStyle = flattenStyle<ViewStyle>([{ backgroundColor }, style]);
 
-  return <View style={[{ backgroundColor }, style]} {...otherProps} />;
+  return <View {...otherProps} style={resolvedStyle} />;
 }

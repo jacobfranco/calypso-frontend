@@ -14,8 +14,13 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
 import {
+  AdminAiDecisionEvent,
   AdminAiDecisionsResponse,
+  AdminPairDirectionalScore,
   AdminPairScoreResponse,
+  AdminPairSnapshot,
+  AdminPairTopCandidate,
+  AdminRerankEvent,
   AdminRerankEventsResponse,
   fetchAdminAiDecisions,
   fetchAdminLlmTelemetry,
@@ -24,6 +29,7 @@ import {
   fetchAdminSilhouette,
   fetchSignals,
   LlmTelemetryResponse,
+  MatchScorerDebug,
   postDebugSummonNextPrivatePrompt,
   SignalRecord,
   SilhouetteConcept,
@@ -88,6 +94,537 @@ function compactAggregateRows(rows: { surface?: string; action?: string; count: 
     .map((row) => `${row[key] ?? 'unknown'}=${row.count}`)
     .join(' ');
   return values || 'none';
+}
+
+function fmtPercent(value: number | null | undefined, digits = 0): string {
+  if (!Number.isFinite(value)) return 'n/a';
+  return `${((value as number) * 100).toFixed(digits)}%`;
+}
+
+function fmtLatency(value: number | null | undefined): string {
+  if (!Number.isFinite(value)) return 'n/a';
+  return `${Math.round(value as number)} ms`;
+}
+
+function fmtBool(value: boolean | null | undefined): string {
+  if (value == null) return 'n/a';
+  return value ? 'Yes' : 'No';
+}
+
+function formatDetailLabel(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function topAggregateLabel<T extends { count: number }>(
+  rows: T[] | undefined,
+  labelFor: (row: T) => string | undefined
+): string {
+  const top = (rows ?? []).slice().sort((a, b) => b.count - a.count)[0];
+  return top ? `${labelFor(top) ?? 'unknown'} (${top.count})` : 'n/a';
+}
+
+type AdminDetailRow = {
+  label: string;
+  value: string;
+};
+
+type LlmPricing = {
+  inputPerMillion: number;
+  outputPerMillion: number;
+};
+
+const LLM_PRICING_BY_MODEL: Record<string, LlmPricing> = {
+  'gpt-5.5': { inputPerMillion: 5.0, outputPerMillion: 30.0 },
+  'gpt-5.4-mini': { inputPerMillion: 0.75, outputPerMillion: 4.5 },
+  'gpt-5.4-nano': { inputPerMillion: 0.2, outputPerMillion: 1.25 },
+  'gpt-5.4': { inputPerMillion: 2.5, outputPerMillion: 15.0 },
+  'gpt-5-mini': { inputPerMillion: 0.25, outputPerMillion: 2.0 },
+  'gpt-5-nano': { inputPerMillion: 0.05, outputPerMillion: 0.4 },
+  'gpt-5': { inputPerMillion: 1.25, outputPerMillion: 10.0 },
+  'gpt-4.1-mini': { inputPerMillion: 0.4, outputPerMillion: 1.6 },
+  'gpt-4.1-nano': { inputPerMillion: 0.1, outputPerMillion: 0.4 },
+  'gpt-4.1': { inputPerMillion: 2.0, outputPerMillion: 8.0 },
+  'gpt-4o-mini': { inputPerMillion: 0.15, outputPerMillion: 0.6 },
+  'gpt-4o': { inputPerMillion: 2.5, outputPerMillion: 10.0 },
+  'o4-mini': { inputPerMillion: 1.1, outputPerMillion: 4.4 },
+};
+
+function DetailRows({
+  rows,
+  mutedColor,
+}: {
+  rows: AdminDetailRow[];
+  mutedColor: string;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <View style={styles.detailGrid}>
+      {rows.map((row, idx) => (
+        <View key={`${row.label}-${idx}`} style={styles.detailRow}>
+          <ThemedText style={[styles.detailLabel, { color: mutedColor }]}>{row.label}</ThemedText>
+          <ThemedText style={styles.detailValue}>{row.value}</ThemedText>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function detailRowsFromRecord(details: Record<string, unknown> | undefined, limit = 24): AdminDetailRow[] {
+  return Object.entries(details ?? {})
+    .slice(0, limit)
+    .map(([key, value]) => ({
+      label: formatDetailLabel(key),
+      value: compactAdminValue(value, 420),
+    }));
+}
+
+function aiDecisionPreview(event: AdminAiDecisionEvent): string {
+  const details = Object.entries(event.details ?? {})
+    .slice(0, 3)
+    .map(([key, value]) => `${formatDetailLabel(key)} ${compactAdminValue(value, 56)}`)
+    .join(' | ');
+  return details || 'No details';
+}
+
+function stringsFromAdminValue(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim() : compactAdminValue(item, 80)))
+      .filter(Boolean);
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function accountTrace(accountId?: number): string {
+  return accountId == null ? 'unknown user' : `user ${accountId}`;
+}
+
+function targetTrace(targetAccountId?: number): string {
+  return targetAccountId == null ? '' : ` -> target ${targetAccountId}`;
+}
+
+function adminValue(details: Record<string, unknown> | undefined, key: string): unknown {
+  return details == null ? undefined : details[key];
+}
+
+function stringAdminValue(details: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = adminValue(details, key);
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return undefined;
+}
+
+function llmPricingForModel(model?: string): LlmPricing | null {
+  const normalized = (model ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  const exact = LLM_PRICING_BY_MODEL[normalized];
+  if (exact) return exact;
+  const key = Object.keys(LLM_PRICING_BY_MODEL)
+    .sort((a, b) => b.length - a.length)
+    .find((candidate) => normalized.startsWith(candidate));
+  return key ? LLM_PRICING_BY_MODEL[key] : null;
+}
+
+function estimateLlmCostDollars(model: string | undefined, inputTokens: number | undefined, outputTokens: number | undefined): number | null {
+  const pricing = llmPricingForModel(model);
+  if (!pricing) return null;
+  const input = Math.max(0, Number.isFinite(inputTokens) ? (inputTokens as number) : 0);
+  const output = Math.max(0, Number.isFinite(outputTokens) ? (outputTokens as number) : 0);
+  return (input * pricing.inputPerMillion + output * pricing.outputPerMillion) / 1_000_000;
+}
+
+function fmtMoney(value: number | null | undefined): string {
+  if (!Number.isFinite(value)) return 'cost n/a';
+  const amount = value as number;
+  if (amount > 0 && amount < 0.000001) return '<$0.000001';
+  if (amount < 0.01) return `$${amount.toFixed(6)}`;
+  return `$${amount.toFixed(4)}`;
+}
+
+function llmEventCost(event: LlmTelemetryResponse['events'][number]): number | null {
+  return estimateLlmCostDollars(event.model, event.inputTokens, event.outputTokens);
+}
+
+function llmEventNarrative(event: LlmTelemetryResponse['events'][number]): string {
+  const cost = llmEventCost(event);
+  const operation = event.operation || event.stage;
+  const subject = `${accountTrace(event.accountId)}${targetTrace(event.targetAccountId)}`;
+  const source = [event.promptId ? `prompt ${event.promptId}` : null, event.sourceId ? `source ${event.sourceId}` : null]
+    .filter(Boolean)
+    .join(', ');
+  const context = source ? ` for ${source}` : '';
+  const candidateContext = event.candidateCount ? ` across ${event.candidateCount} candidates` : '';
+  return `${operation}/${event.surface} ran for ${subject}${context}${candidateContext} -> ${fmtMoney(
+    cost
+  )}, ${fmtCount(event.inputTokens)} in / ${fmtCount(event.outputTokens)} out tokens, ${fmtLatency(
+    event.latencyMs
+  )}, ${event.success ? 'success' : `failed (${event.error ?? 'unknown error'})`}.`;
+}
+
+function expensiveLlmEvents(events: LlmTelemetryResponse['events'] | undefined): LlmTelemetryResponse['events'] {
+  return (events ?? [])
+    .slice()
+    .sort((a, b) => (llmEventCost(b) ?? -1) - (llmEventCost(a) ?? -1));
+}
+
+function llmRecentCost(events: LlmTelemetryResponse['events'] | undefined): number {
+  return (events ?? []).reduce((sum, event) => sum + (llmEventCost(event) ?? 0), 0);
+}
+
+function aiDecisionNarrative(event: AdminAiDecisionEvent): string {
+  const details = event.details ?? {};
+  const subject = `${accountTrace(event.accountId)}${targetTrace(event.targetAccountId)}`;
+  if (event.surface === 'signal_extraction') {
+    const tokens = stringsFromAdminValue(details.tokens);
+    const negativeTokens = stringsFromAdminValue(details.negativeTokens);
+    const promptId = stringAdminValue(details, 'promptId');
+    const sourceId = stringAdminValue(details, 'sourceId');
+    const source = promptId || sourceId ? ` from ${promptId ? `prompt ${promptId}` : ''}${promptId && sourceId ? ', ' : ''}${sourceId ? `source ${sourceId}` : ''}` : '';
+    const output = tokens.length ? tokens.join(', ') : 'none';
+    const negative = negativeTokens.length ? ` Negative: ${negativeTokens.join(', ')}.` : '';
+    return `${event.action === 'signals_extracted' ? 'Signals extracted' : 'No signals extracted'} for ${subject}${source} -> ${output}.${negative}`;
+  }
+  if (event.surface === 'rerank') {
+    const name = stringAdminValue(details, 'candidateName') ?? stringAdminValue(details, 'candidateId') ?? 'candidate';
+    const before = compactAdminValue(adminValue(details, 'scoreBefore'), 40);
+    const after = compactAdminValue(adminValue(details, 'scoreAfter'), 40);
+    const use = stringAdminValue(details, 'recommendedUse') ?? stringAdminValue(details, 'skipReason') ?? event.action;
+    const why = stringsFromAdminValue(adminValue(details, 'whyItWorks')).slice(0, 2).join('; ');
+    const reason = why ? ` Why: ${why}.` : '';
+    return `Reranker ${event.action} for ${subject} on ${name} -> score ${before} to ${after}, use=${use}.${reason}`;
+  }
+  if (event.surface === 'matchmaking_followup') {
+    const selected = compactAdminValue(adminValue(details, 'selected'), 180);
+    const eligible = compactAdminValue(adminValue(details, 'eligibleQuestions'), 40);
+    return `Follow-up question budget ran for ${subject} -> ${event.action}; eligible=${eligible}; selected=${selected}.`;
+  }
+  if (event.surface === 'private_prompt_chat' || event.surface === 'matchmaking_followup_chat') {
+    const source = stringAdminValue(details, 'sourceId');
+    const strategy = stringAdminValue(details, 'strategy');
+    const missing = compactAdminValue(adminValue(details, 'missing'), 180);
+    return `Prompt sufficiency checked for ${subject}${source ? ` on ${source}` : ''} -> ${event.action}; strategy=${strategy ?? 'n/a'}; missing=${missing}.`;
+  }
+  if (event.surface === 'silhouette_patch') {
+    const source = stringAdminValue(details, 'sourceId') ?? stringAdminValue(details, 'promptId');
+    const dropped = compactAdminValue(adminValue(details, 'droppedOps'), 40);
+    const accepted = compactAdminValue(adminValue(details, 'acceptedOps'), 40);
+    return `Silhouette patch ${event.action} for ${subject}${source ? ` from ${source}` : ''} -> accepted=${accepted}, dropped=${dropped}.`;
+  }
+  return `${formatDetailLabel(event.surface)} / ${formatDetailLabel(event.stage)} ${event.action} for ${subject}. ${aiDecisionPreview(event)}.`;
+}
+
+const SCORE_WEIGHT_FILTER_FIT = 0.22;
+const SCORE_WEIGHT_VIEWER_NEEDS = 0.15;
+const SCORE_WEIGHT_TARGET_NEEDS = 0.14;
+const SCORE_WEIGHT_SELF_OVERLAP = 0.07;
+const SCORE_WEIGHT_MATCH_STANDARD = 0.17;
+const SCORE_WEIGHT_VIEWER_REACTION = 0.16;
+const SCORE_WEIGHT_TARGET_REACTION = 0.07;
+const SCORE_WEIGHT_NOVELTY = 0.02;
+
+type ScoreComponent = {
+  label: string;
+  value: number | null;
+  points: number | null;
+  note?: string;
+};
+
+function finiteNumber(value: number | null | undefined): number | null {
+  return Number.isFinite(value) ? (value as number) : null;
+}
+
+function weightedPoints(value: number | null | undefined, weight: number): number | null {
+  const finite = finiteNumber(value);
+  return finite == null ? null : finite * weight * 100.0;
+}
+
+function sumFinite(values: Array<number | null>): number {
+  return values.reduce<number>((sum, value) => (value == null ? sum : sum + value), 0);
+}
+
+function componentLine(component: ScoreComponent): string {
+  const raw = component.value == null ? 'n/a' : fmtNumber(component.value, 3);
+  const points = component.points == null ? 'n/a' : fmtDelta(component.points);
+  return `${points} pts (${raw})${component.note ? ` ${component.note}` : ''}`;
+}
+
+function deterministicScoreComponents(debug: MatchScorerDebug | undefined): ScoreComponent[] {
+  if (!debug) return [];
+  const viewerNeeds = weightedPoints(debug.viewerNeedsMetByTarget, SCORE_WEIGHT_VIEWER_NEEDS);
+  const targetNeeds = weightedPoints(debug.targetNeedsMetByViewer, SCORE_WEIGHT_TARGET_NEEDS);
+  const sharedSelf = weightedPoints(debug.sharedSelfOverlap, SCORE_WEIGHT_SELF_OVERLAP);
+  const signalPoints = sumFinite([viewerNeeds, targetNeeds, sharedSelf]);
+  const signalHasValue = [viewerNeeds, targetNeeds, sharedSelf].some((value) => value != null);
+  const reactionViewer = weightedPoints(debug.viewerReactionScore, SCORE_WEIGHT_VIEWER_REACTION);
+  const reactionTarget = weightedPoints(debug.targetReactionScore, SCORE_WEIGHT_TARGET_REACTION);
+  const reactionPoints = sumFinite([reactionViewer, reactionTarget]);
+  const reactionHasValue = [reactionViewer, reactionTarget].some((value) => value != null);
+  const resonance = finiteNumber(debug.resonanceDelta);
+  return [
+    {
+      label: 'Filters',
+      value: finiteNumber(debug.filterPreferenceFit),
+      points: weightedPoints(debug.filterPreferenceFit, SCORE_WEIGHT_FILTER_FIT),
+    },
+    {
+      label: 'Signals',
+      value: finiteNumber(debug.signalAlignment),
+      points: signalHasValue ? signalPoints : null,
+    },
+    {
+      label: 'Standards',
+      value: finiteNumber(debug.matchStandardScore),
+      points: weightedPoints(debug.matchStandardScore, SCORE_WEIGHT_MATCH_STANDARD),
+      note: `shared ${fmtCount(debug.matchStandardSharedCount)}`,
+    },
+    {
+      label: 'Reactions',
+      value: finiteNumber(debug.viewerReactionScore),
+      points: reactionHasValue ? reactionPoints : null,
+    },
+    {
+      label: 'Novelty',
+      value: finiteNumber(debug.noveltyScore),
+      points: weightedPoints(debug.noveltyScore, SCORE_WEIGHT_NOVELTY),
+    },
+    {
+      label: 'Resonance',
+      value: finiteNumber(debug.resonanceAlignment),
+      points: resonance == null ? null : resonance * 100.0,
+    },
+  ];
+}
+
+function hasTier3Debug(debug: MatchScorerDebug | undefined): boolean {
+  return Boolean(debug && (
+    Number.isFinite(debug.tier3Compatibility) ||
+    Number.isFinite(debug.scoreBeforeTier3) ||
+    Number.isFinite(debug.scoreAfterTier3)
+  ));
+}
+
+function rerankRowsFromDebug(debug: MatchScorerDebug | undefined): AdminDetailRow[] {
+  if (!hasTier3Debug(debug)) return [];
+  return [
+    {
+      label: 'Rerank',
+      value: `${fmtNumber(debug?.scoreBeforeTier3, 2)} -> ${fmtNumber(debug?.scoreAfterTier3, 2)} (${fmtDelta(
+        finiteNumber(debug?.scoreAfterTier3) != null && finiteNumber(debug?.scoreBeforeTier3) != null
+          ? (debug?.scoreAfterTier3 as number) - (debug?.scoreBeforeTier3 as number)
+          : null
+      )})`,
+    },
+    {
+      label: 'Tier 3 fit',
+      value: `${fmtNumber(debug?.tier3Compatibility, 3)} compat, ${fmtNumber(debug?.tier3Confidence, 3)} confidence`,
+    },
+    ...(debug?.tier3RecommendedUse ? [{ label: 'Use', value: debug.tier3RecommendedUse }] : []),
+    ...(debug?.tier3Reason ? [{ label: 'Why', value: compactAdminText(debug.tier3Reason, 260) }] : []),
+  ];
+}
+
+function rerankRowsFromAudit(event: AdminRerankEvent | undefined): AdminDetailRow[] {
+  if (!event || event.eventType === 'skipped') return [];
+  return [
+    {
+      label: 'Latest rerank',
+      value: `${fmtNumber(event.scoreBefore, 2)} -> ${fmtNumber(event.scoreAfter, 2)} (${fmtDelta(event.netChange)})`,
+    },
+    {
+      label: 'Tier 3 fit',
+      value: `${fmtNumber(event.tier3Compatibility, 3)} compat, ${fmtNumber(event.tier3Confidence, 3)} confidence`,
+    },
+    ...(event.recommendedUse ? [{ label: 'Use', value: event.recommendedUse }] : []),
+    ...(event.fitSummaryInternal ? [{ label: 'Why', value: compactAdminText(event.fitSummaryInternal, 260) }] : []),
+  ];
+}
+
+function ScoreComposition({
+  debug,
+  currentScore,
+  rerankEvent,
+  mutedColor,
+}: {
+  debug?: MatchScorerDebug;
+  currentScore?: number;
+  rerankEvent?: AdminRerankEvent;
+  mutedColor: string;
+}) {
+  const components = deterministicScoreComponents(debug);
+  const deterministicRows: AdminDetailRow[] = components.map((component) => ({
+    label: component.label,
+    value: componentLine(component),
+  }));
+  const debugRerankRows = rerankRowsFromDebug(debug);
+  const auditRerankRows = debugRerankRows.length ? [] : rerankRowsFromAudit(rerankEvent);
+  return (
+    <View style={styles.scoreBreakdown}>
+      <DetailRows
+        mutedColor={mutedColor}
+        rows={[
+          { label: 'Current score', value: fmtNumber(currentScore, 2) },
+          ...deterministicRows,
+          ...debugRerankRows,
+          ...auditRerankRows,
+        ]}
+      />
+      {!debug ? (
+        <ThemedText style={[styles.signalItemText, { color: mutedColor }]}>No scorer debug attached.</ThemedText>
+      ) : null}
+      {!hasTier3Debug(debug) && rerankEvent ? (
+        <ThemedText style={[styles.signalItemText, { color: mutedColor }]}>
+          Rerank values are from latest audit, not the current score row.
+        </ThemedText>
+      ) : null}
+    </View>
+  );
+}
+
+function CandidateScoreCard({
+  candidate,
+  rerankEvent,
+  mutedColor,
+}: {
+  candidate: AdminPairTopCandidate;
+  rerankEvent?: AdminRerankEvent;
+  mutedColor: string;
+}) {
+  const debug = candidate.scorerDebug;
+  return (
+    <View style={styles.signalItem}>
+      <View style={styles.itemHeaderRow}>
+        <View style={styles.itemHeaderText}>
+          <ThemedText style={styles.signalItemToken}>{candidate.account.name ?? candidate.account.id}</ThemedText>
+          <ThemedText style={[styles.signalItemText, { color: mutedColor }]}>{candidate.account.id}</ThemedText>
+        </View>
+        <ThemedText style={styles.scoreBadge}>{fmtNumber(candidate.score, 2)}</ThemedText>
+      </View>
+      <ScoreComposition
+        debug={debug}
+        currentScore={candidate.score}
+        rerankEvent={rerankEvent}
+        mutedColor={mutedColor}
+      />
+    </View>
+  );
+}
+
+function DirectionalScoreCard({
+  title,
+  score,
+  rerankEvent,
+  mutedColor,
+}: {
+  title: string;
+  score: AdminPairDirectionalScore;
+  rerankEvent?: AdminRerankEvent;
+  mutedColor: string;
+}) {
+  return (
+    <View style={styles.signalItem}>
+      <View style={styles.itemHeaderRow}>
+        <View style={styles.itemHeaderText}>
+          <ThemedText style={styles.signalItemToken}>{title}</ThemedText>
+          <ThemedText style={[styles.signalItemText, { color: mutedColor }]}>
+            {score.account ? `${score.account.name ?? score.account.id} (${score.account.id})` : 'No score found'}
+          </ThemedText>
+        </View>
+        <ThemedText style={styles.scoreBadge}>{fmtNumber(score.score, 2)}</ThemedText>
+      </View>
+      <ScoreComposition
+        debug={score.scorerDebug}
+        currentScore={score.score}
+        rerankEvent={rerankEvent}
+        mutedColor={mutedColor}
+      />
+    </View>
+  );
+}
+
+function PairPipelineCard({
+  pair,
+  mutedColor,
+}: {
+  pair: AdminPairSnapshot;
+  mutedColor: string;
+}) {
+  const staging = pair.staging;
+  if (!staging) return null;
+  return (
+    <View style={styles.signalItem}>
+      <ThemedText style={styles.signalItemToken}>Match pipeline</ThemedText>
+      <DetailRows
+        mutedColor={mutedColor}
+        rows={[
+          { label: 'Status', value: staging.status ?? 'n/a' },
+          { label: 'Visible', value: fmtBool(staging.visibleMatch) },
+          { label: 'Effective score', value: fmtNumber(staging.effectiveScore, 2) },
+          { label: 'Score at rerank', value: fmtNumber(staging.scoreAtRerank, 2) },
+          { label: 'Rerank fit', value: `${fmtNumber(staging.rerankCompatibility, 3)} / ${fmtNumber(staging.rerankConfidence, 3)}` },
+          { label: 'Entered', value: fmtAdminTime(staging.enteredAt) },
+          { label: 'Updated', value: fmtAdminTime(staging.updatedAt) },
+          ...(staging.rerankReason
+            ? [{ label: 'Rerank reason', value: compactAdminText(staging.rerankReason, 360) }]
+            : []),
+        ]}
+      />
+    </View>
+  );
+}
+
+function PairSnapshotCard({
+  pair,
+  rerankEvent,
+  mutedColor,
+}: {
+  pair: AdminPairSnapshot;
+  rerankEvent?: AdminRerankEvent;
+  mutedColor: string;
+}) {
+  return (
+    <View style={styles.signalItem}>
+      <View style={styles.itemHeaderRow}>
+        <View style={styles.itemHeaderText}>
+          <ThemedText style={styles.signalItemToken}>{`Pair target ${pair.targetAccountId}`}</ThemedText>
+          <ThemedText style={[styles.signalItemText, { color: mutedColor }]}>
+            {`viewer=${pair.viewerMode} target=${pair.targetMode} source=${pair.scoreSource ?? 'n/a'}`}
+          </ThemedText>
+        </View>
+      </View>
+      <DetailRows
+        mutedColor={mutedColor}
+        rows={[
+          { label: 'Mutual score', value: fmtNumber(pair.mutualMinScore, 2) },
+          { label: 'Match / auto', value: `${fmtBool(pair.bothMeetMatchThreshold)} / ${fmtBool(pair.bothMeetAutoPassThreshold)}` },
+          { label: 'Facecard likes', value: `${fmtBool(pair.viewerLikedTargetFacecard)} / ${fmtBool(pair.targetLikedViewerFacecard)}` },
+          { label: 'Prompt likes', value: `${fmtBool(pair.viewerPromptLikeSeen)} / ${fmtBool(pair.targetPromptLikeSeen)}` },
+        ]}
+      />
+      <DirectionalScoreCard
+        title="Viewer -> target"
+        score={pair.viewerToTarget}
+        rerankEvent={rerankEvent}
+        mutedColor={mutedColor}
+      />
+      <DirectionalScoreCard
+        title="Target -> viewer"
+        score={pair.targetToViewer}
+        mutedColor={mutedColor}
+      />
+      <PairPipelineCard pair={pair} mutedColor={mutedColor} />
+    </View>
+  );
 }
 
 type SignalIntentGroup = 'seeking' | 'self' | 'both' | 'meta' | 'other';
@@ -476,6 +1013,20 @@ export default function AdminScreen() {
     const count = (rerankEvents?.events ?? []).length;
     return count === 0 ? 'No rerank events recorded yet.' : `${count} recent events`;
   }, [rerankEvents, rerankEventsLoading]);
+
+  const latestRerankByCandidateId = useMemo(() => {
+    const out: Record<string, AdminRerankEvent> = {};
+    (rerankEvents?.events ?? []).forEach((event) => {
+      const candidateId = event.candidateId?.trim();
+      if (!candidateId) return;
+      const existing = out[candidateId];
+      if (!existing || (event.createdAt ?? 0) > (existing.createdAt ?? 0)) {
+        out[candidateId] = event;
+      }
+    });
+    return out;
+  }, [rerankEvents]);
+
   const refreshSignals = useCallback(async () => {
     if (!account || !token) return;
     setSignalsLoading(true);
@@ -881,24 +1432,30 @@ export default function AdminScreen() {
                 <ThemedText style={[styles.mutedText, { color: muted }]}>No telemetry loaded.</ThemedText>
               ) : (
                 <>
-                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                    {`calls=${llmTelemetry.totals?.calls ?? 0} success=${llmTelemetry.totals?.successes ?? 0} fail=${
-                      llmTelemetry.totals?.failures ?? 0
-                    } total_tokens=${llmTelemetry.totals?.totalTokens ?? 0}`}
-                  </ThemedText>
-                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                    {`input=${llmTelemetry.totals?.inputTokens ?? 0} output=${
-                      llmTelemetry.totals?.outputTokens ?? 0
-                    } avg_latency_ms=${(llmTelemetry.totals?.avgLatencyMs ?? 0).toFixed(1)}`}
-                  </ThemedText>
+                  <View style={styles.signalItem}>
+                    <ThemedText style={styles.signalItemToken}>LLM spend and health</ThemedText>
+                    <ThemedText style={[styles.narrativeText, { color: muted }]}>
+                      {`Aggregate: ${fmtCount(llmTelemetry.totals?.calls)} calls, ${fmtCount(
+                        llmTelemetry.totals?.successes
+                      )} success, ${fmtCount(llmTelemetry.totals?.failures)} failed, ${fmtCount(
+                        llmTelemetry.totals?.inputTokens
+                      )} input tokens, ${fmtCount(llmTelemetry.totals?.outputTokens)} output tokens, avg latency ${fmtLatency(
+                        llmTelemetry.totals?.avgLatencyMs
+                      )}.`}
+                    </ThemedText>
+                    <ThemedText style={[styles.narrativeText, { color: muted }]}>
+                      {`Recent-event estimated spend: ${fmtMoney(llmRecentCost(llmTelemetry.events))} across ${
+                        (llmTelemetry.events ?? []).length
+                      } recent events. Cost uses per-event model names; aggregate stage rows do not include model, so they stay token-only.`}
+                    </ThemedText>
+                  </View>
                   {(llmTelemetry.byStage ?? []).slice(0, 8).map((row) => (
                     <View key={`${row.stageKey}`} style={styles.signalItem}>
                       <ThemedText style={styles.signalItemToken}>{`${row.stage}/${row.surface}`}</ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`calls=${row.calls} success=${row.successes} fail=${row.failures} tokens=${row.totalTokens}`}
-                      </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`in=${row.inputTokens} out=${row.outputTokens} avg_ms=${row.avgLatencyMs.toFixed(1)}`}
+                      <ThemedText style={[styles.narrativeText, { color: muted }]}>
+                        {`${fmtCount(row.calls)} calls, ${fmtCount(row.failures)} failures, ${fmtCount(
+                          row.inputTokens
+                        )} in / ${fmtCount(row.outputTokens)} out tokens, ${fmtLatency(row.avgLatencyMs)} avg latency.`}
                       </ThemedText>
                     </View>
                   ))}
@@ -907,49 +1464,50 @@ export default function AdminScreen() {
                       <ThemedText style={styles.signalItemToken}>
                         {`${row.operation || row.stage}/${row.surface} acct=${row.accountId ?? 'n/a'}`}
                       </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`calls=${row.calls} fail=${row.failures} tokens=${row.totalTokens} chars=${fmtCount(
+                      <ThemedText style={[styles.narrativeText, { color: muted }]}>
+                        {`Operation trace: ${fmtCount(row.calls)} calls for user ${row.accountId ?? 'n/a'}, ${fmtCount(
+                          row.failures
+                        )} failures, ${fmtCount(row.totalTokens)} tokens, ${fmtCount(
                           row.promptChars
-                        )} candidates=${fmtCount(row.candidateCount)}`}
+                        )} prompt chars, ${fmtCount(row.candidateCount)} candidates.`}
                       </ThemedText>
                     </View>
                   ))}
-                  {(llmTelemetry.events ?? []).slice(0, 24).map((event, idx) => {
+                  {expensiveLlmEvents(llmTelemetry.events).slice(0, 24).map((event, idx) => {
                     const key = `${event.createdAt}-${event.stage}-${event.surface}-${idx}`;
                     const expanded = expandedTelemetryRows[key] === true;
-                    const accountLabel = event.accountId == null ? 'acct=n/a' : `acct=${event.accountId}`;
-                    const targetLabel = event.targetAccountId == null ? '' : ` target=${event.targetAccountId}`;
+                    const cost = llmEventCost(event);
                     return (
                       <Pressable key={key} onPress={() => toggleTelemetryRow(key)} style={styles.signalItem}>
                         <ThemedText style={styles.signalItemToken}>
-                          {`${event.operation || event.stage}/${event.surface} ${
-                            event.success ? 'ok' : 'fail'
-                          } tok=${event.totalTokens}`}
+                          {`${fmtMoney(cost)} | ${event.operation || event.stage}/${event.surface}`}
+                        </ThemedText>
+                        <ThemedText style={[styles.narrativeText, { color: muted }]}>
+                          {llmEventNarrative(event)}
                         </ThemedText>
                         <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                          {`${accountLabel}${targetLabel} model=${event.model} ${new Date(
-                            event.createdAt
-                          ).toLocaleTimeString()}`}
+                          {`model=${event.model} ${new Date(event.createdAt).toLocaleTimeString()}`}
                         </ThemedText>
                         {expanded ? (
                           <>
-                            <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                              {`stage=${event.stage} prompt=${event.promptId || 'n/a'} source=${
-                                event.sourceId || 'n/a'
-                              }`}
-                            </ThemedText>
-                            <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                              {`in=${event.inputTokens} out=${event.outputTokens} max_out=${
-                                event.maxOutputTokens ?? 'n/a'
-                              } chars=${event.promptChars ?? 'n/a'} candidates=${
-                                event.candidateCount ?? 'n/a'
-                              } ms=${event.latencyMs}`}
-                            </ThemedText>
-                            {event.error ? (
-                              <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                                {`error=${event.error}`}
-                              </ThemedText>
-                            ) : null}
+                            <DetailRows
+                              mutedColor={muted}
+                              rows={[
+                                { label: 'Estimated cost', value: fmtMoney(cost) },
+                                { label: 'Tokens', value: `${fmtCount(event.inputTokens)} in / ${fmtCount(event.outputTokens)} out` },
+                                { label: 'Latency', value: fmtLatency(event.latencyMs) },
+                                { label: 'Stage', value: event.stage },
+                                { label: 'Surface', value: event.surface },
+                                { label: 'Operation', value: event.operation ?? 'n/a' },
+                                { label: 'Prompt', value: event.promptId ?? 'n/a' },
+                                { label: 'Source', value: event.sourceId ?? 'n/a' },
+                                { label: 'Candidates', value: fmtCount(event.candidateCount) },
+                                { label: 'Prompt chars', value: fmtCount(event.promptChars) },
+                                { label: 'Max output', value: fmtCount(event.maxOutputTokens) },
+                                { label: 'Model', value: event.model },
+                                ...(event.error ? [{ label: 'Error', value: event.error }] : []),
+                              ]}
+                            />
                           </>
                         ) : null}
                       </Pressable>
@@ -987,29 +1545,32 @@ export default function AdminScreen() {
                 <ThemedText style={[styles.mutedText, { color: muted }]}>No AI decisions loaded.</ThemedText>
               ) : (
                 <>
-                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                    {`decisions=${aiDecisions.totals?.decisions ?? 0} generatedAt=${aiDecisions.generatedAt}`}
-                  </ThemedText>
-                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                    {`surfaces: ${compactAggregateRows(aiDecisions.bySurface, 'surface')}`}
-                  </ThemedText>
-                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                    {`actions: ${compactAggregateRows(aiDecisions.byAction, 'action')}`}
-                  </ThemedText>
+                  <View style={styles.signalItem}>
+                    <ThemedText style={styles.signalItemToken}>Decision summary</ThemedText>
+                    <ThemedText style={[styles.narrativeText, { color: muted }]}>
+                      {`${fmtCount(aiDecisions.totals?.decisions)} decisions recorded. Top surface: ${topAggregateLabel(
+                        aiDecisions.bySurface,
+                        (row) => row.surface
+                      )}. Top action: ${topAggregateLabel(aiDecisions.byAction, (row) => row.action)}. Generated ${fmtAdminTime(
+                        aiDecisions.generatedAt
+                      )}.`}
+                    </ThemedText>
+                  </View>
                   {(aiDecisions.byDecision ?? []).slice(0, 6).map((row) => (
                     <View key={row.decisionKey ?? `${row.surface}-${row.stage}-${row.action}`} style={styles.signalItem}>
                       <ThemedText style={styles.signalItemToken}>
                         {`${row.action ?? 'action'} / ${row.surface ?? 'surface'}`}
                       </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`stage=${row.stage ?? 'unknown'} count=${row.count}`}
+                      <ThemedText style={[styles.narrativeText, { color: muted }]}>
+                        {`${fmtCount(row.count)} events at stage ${row.stage ?? 'unknown'} on ${
+                          row.surface ?? 'unknown'
+                        }.`}
                       </ThemedText>
                     </View>
                   ))}
                   {(aiDecisions.events ?? []).slice(0, 20).map((event, idx) => {
                     const key = `${event.createdAt}-${event.surface}-${event.stage}-${event.action}-${idx}`;
                     const expanded = expandedAiDecisionRows[key] === true;
-                    const details = Object.entries(event.details ?? {}).slice(0, 16);
                     const accountLabel = event.accountId == null ? 'acct=n/a' : `acct=${event.accountId}`;
                     const targetLabel = event.targetAccountId == null ? '' : ` target=${event.targetAccountId}`;
                     return (
@@ -1022,16 +1583,25 @@ export default function AdminScreen() {
                             event.createdAt
                           ).toLocaleTimeString()}`}
                         </ThemedText>
+                        <ThemedText style={[styles.narrativeText, { color: muted }]}>
+                          {aiDecisionNarrative(event)}
+                        </ThemedText>
                         {expanded ? (
-                          details.length === 0 ? (
-                            <ThemedText style={[styles.signalItemText, { color: muted }]}>details=none</ThemedText>
-                          ) : (
-                            details.map(([detailKey, value]) => (
-                              <ThemedText key={detailKey} style={[styles.signalItemText, { color: muted }]}>
-                                {`${detailKey}=${compactAdminValue(value)}`}
-                              </ThemedText>
-                            ))
-                          )
+                          <>
+                            <DetailRows
+                              mutedColor={muted}
+                              rows={[
+                                { label: 'Action', value: event.action },
+                                { label: 'Surface', value: event.surface },
+                                { label: 'Stage', value: event.stage },
+                                { label: 'Account', value: accountLabel.replace('acct=', '') },
+                                { label: 'Target', value: targetLabel.replace(' target=', '') || 'n/a' },
+                                ...(detailRowsFromRecord(event.details).length === 0
+                                  ? [{ label: 'Details', value: 'none' }]
+                                  : detailRowsFromRecord(event.details)),
+                              ]}
+                            />
+                          </>
                         ) : null}
                       </Pressable>
                     );
@@ -1143,144 +1713,61 @@ export default function AdminScreen() {
                 <ThemedText style={[styles.mutedText, { color: muted }]}>No pair-score snapshot loaded.</ThemedText>
               ) : (
                 <>
-                  <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                    {`viewer_mode=${pairScore.viewerMode} threshold_match=${pairScore.viewerThresholds.match.toFixed(
-                      2
-                    )} threshold_auto=${pairScore.viewerThresholds.autoPass.toFixed(2)} generatedAt=${
-                      pairScore.generatedAt
-                    }`}
-                  </ThemedText>
-                  {(pairScore.topCandidates ?? []).slice(0, 8).map((candidate) => {
-                    const debug = candidate.scorerDebug;
-                    const blend = Number.isFinite(debug?.profileSignalBlend)
-                      ? (debug?.profileSignalBlend as number)
-                      : null;
-                    const align = Number.isFinite(debug?.signalAlignment)
-                      ? (debug?.signalAlignment as number)
-                      : null;
-                    const fit = Number.isFinite(debug?.filterPreferenceFit)
-                      ? (debug?.filterPreferenceFit as number)
-                      : null;
-                    return (
-                      <View key={candidate.account.id} style={styles.signalItem}>
-                        <ThemedText style={styles.signalItemToken}>
-                          {candidate.account.name ?? candidate.account.id}
-                        </ThemedText>
-                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                          {`${candidate.account.id} score=${candidate.score.toFixed(2)} delta_match=${fmtDelta(
-                            candidate.deltaToMatchThreshold
-                          )} delta_auto=${fmtDelta(candidate.deltaToAutoPassThreshold)}`}
-                        </ThemedText>
-                        <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                          {`fit=${fit == null ? 'n/a' : fit.toFixed(3)} align=${
-                            align == null ? 'n/a' : align.toFixed(3)
-                          } blend=${blend == null ? 'n/a' : blend.toFixed(3)}`}
-                        </ThemedText>
-                      </View>
-                    );
-                  })}
+                  <View style={styles.signalItem}>
+                    <ThemedText style={styles.signalItemToken}>Viewer snapshot</ThemedText>
+                    <ThemedText style={[styles.narrativeText, { color: muted }]}>
+                      {`Viewer ${pairScore.viewerId} is in ${pairScore.viewerMode} mode. Match threshold=${fmtNumber(
+                        pairScore.viewerThresholds.match,
+                        2
+                      )}; auto-pass threshold=${fmtNumber(pairScore.viewerThresholds.autoPass, 2)}. Generated ${fmtAdminTime(
+                        pairScore.generatedAt
+                      )} with ${(pairScore.topCandidates ?? []).length} ranked candidates.`}
+                    </ThemedText>
+                    <ThemedText style={[styles.signalItemText, { color: muted }]}>
+                      {`Heap raw=${pairScore.heap?.rawCandidateCount ?? 0} hydrated=${
+                        pairScore.heap?.hydratedCandidateCount ?? (pairScore.topCandidates ?? []).length
+                      }`}
+                    </ThemedText>
+                  </View>
+                  {(pairScore.topCandidates ?? []).slice(0, 8).map((candidate) => (
+                    <CandidateScoreCard
+                      key={candidate.account.id}
+                      candidate={candidate}
+                      rerankEvent={latestRerankByCandidateId[candidate.account.id]}
+                      mutedColor={muted}
+                    />
+                  ))}
                   {(pairScore.topCandidates ?? []).length === 0 ? (
                     <ThemedText style={[styles.signalItemText, { color: muted }]}>
                       No ranked candidates found.
                     </ThemedText>
                   ) : null}
-                  {pairScore.pair ? (
+                  {(pairScore.heap?.rawTopCandidates ?? []).length > 0
+                    && (pairScore.topCandidates ?? []).length === 0 ? (
                     <View style={styles.signalItem}>
-                      <ThemedText style={styles.signalItemToken}>
-                        {`pair target=${pairScore.pair.targetAccountId} mode=${pairScore.pair.targetMode} source=${
-                          pairScore.pair.scoreSource ?? 'n/a'
-                        }`}
-                      </ThemedText>
+                      <ThemedText style={styles.signalItemToken}>Raw heap candidates</ThemedText>
                       <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`pair_reaction(v->t/t->v)=${fmtDelta(pairScore.pair.viewerToTargetReactionScore)}/${fmtDelta(
-                          pairScore.pair.targetToViewerReactionScore
-                        )} facecard_like=${pairScore.pair.viewerLikedTargetFacecard ? 'yes' : 'no'}/${
-                          pairScore.pair.targetLikedViewerFacecard ? 'yes' : 'no'
-                        } prompt_like=${pairScore.pair.viewerPromptLikeSeen ? 'yes' : 'no'}/${
-                          pairScore.pair.targetPromptLikeSeen ? 'yes' : 'no'
-                        }`}
+                        Heap rows exist, but account hydration returned no cards.
                       </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`viewer->target score=${
-                          Number.isFinite(pairScore.pair.viewerToTarget?.score)
-                            ? (pairScore.pair.viewerToTarget.score as number).toFixed(2)
-                            : 'n/a'
-                        } delta_match=${fmtDelta(pairScore.pair.viewerToTarget?.deltaToMatchThreshold)} delta_auto=${fmtDelta(
-                          pairScore.pair.viewerToTarget?.deltaToAutoPassThreshold
-                        )}`}
-                      </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`target->viewer score=${
-                          Number.isFinite(pairScore.pair.targetToViewer?.score)
-                            ? (pairScore.pair.targetToViewer.score as number).toFixed(2)
-                            : 'n/a'
-                        } delta_match=${fmtDelta(pairScore.pair.targetToViewer?.deltaToMatchThreshold)} delta_auto=${fmtDelta(
-                          pairScore.pair.targetToViewer?.deltaToAutoPassThreshold
-                        )}`}
-                      </ThemedText>
-                      <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                        {`mutual_min=${
-                          Number.isFinite(pairScore.pair.mutualMinScore)
-                            ? (pairScore.pair.mutualMinScore as number).toFixed(2)
-                            : 'n/a'
-                        } mutual_delta=${fmtDelta(pairScore.pair.mutualDeltaToThreshold)} pass_match=${
-                          pairScore.pair.bothMeetMatchThreshold ? 'yes' : 'no'
-                        } pass_auto=${pairScore.pair.bothMeetAutoPassThreshold ? 'yes' : 'no'}`}
-                      </ThemedText>
-                      {pairScore.pair.staging ? (
-                        <>
-                          <ThemedText style={styles.signalItemToken}>Match pipeline</ThemedText>
-                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                            {`staging=${pairScore.pair.staging.status ?? 'n/a'} available=${
-                              pairScore.pair.staging.available ? 'yes' : 'no'
-                            } present=${pairScore.pair.staging.present ? 'yes' : 'no'} visible=${
-                              pairScore.pair.staging.visibleMatch ? 'yes' : 'no'
-                            } rerank_evidence=${pairScore.pair.staging.rerankEvidence ? 'yes' : 'no'}`}
-                          </ThemedText>
-                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                            {`reason=${pairScore.pair.staging.holdReason ?? 'n/a'} followup_pending=${
-                              pairScore.pair.staging.followupPending ? 'yes' : 'no'
-                            }`}
-                          </ThemedText>
-                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                            {`thresholds entrance=${fmtNumber(
-                              pairScore.pair.staging.stagingEntranceThreshold
-                            )} exit=${fmtNumber(pairScore.pair.staging.stagingExitThreshold)} escape=${fmtNumber(
-                              pairScore.pair.staging.escapeThreshold
-                            )}`}
-                          </ThemedText>
-                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                            {`scores deterministic=${fmtNumber(
-                              pairScore.pair.staging.deterministicScore
-                            )} target_to_viewer=${fmtNumber(
-                              pairScore.pair.staging.targetToViewerScore
-                            )} mutual=${fmtNumber(pairScore.pair.staging.mutualScore)} effective=${fmtNumber(
-                              pairScore.pair.staging.effectiveScore
-                            )} score_at_rerank=${fmtNumber(pairScore.pair.staging.scoreAtRerank)}`}
-                          </ThemedText>
-                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                            {`rerank count=${fmtCount(pairScore.pair.staging.rerankCount)} use=${
-                              pairScore.pair.staging.rerankRecommendedUse ?? 'n/a'
-                            } cached=${pairScore.pair.staging.rerankCached ? 'yes' : 'no'} compatibility=${fmtNumber(
-                              pairScore.pair.staging.rerankCompatibility,
-                              3
-                            )} confidence=${fmtNumber(pairScore.pair.staging.rerankConfidence, 3)}`}
-                          </ThemedText>
-                          <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                            {`times entered=${fmtAdminTime(pairScore.pair.staging.enteredAt)} updated=${fmtAdminTime(
-                              pairScore.pair.staging.updatedAt
-                            )} reranked=${fmtAdminTime(
-                              pairScore.pair.staging.lastRerankedAt
-                            )} invalidated=${fmtAdminTime(pairScore.pair.staging.rerankInvalidatedAt)}`}
-                          </ThemedText>
-                          {pairScore.pair.staging.rerankReason ? (
-                            <ThemedText style={[styles.signalItemText, { color: muted }]}>
-                              {`rerank_reason=${compactAdminText(pairScore.pair.staging.rerankReason, 180)}`}
-                            </ThemedText>
-                          ) : null}
-                        </>
-                      ) : null}
+                      {(pairScore.heap?.rawTopCandidates ?? []).slice(0, 5).map((candidate) => (
+                        <DetailRows
+                          key={candidate.targetAccountId}
+                          mutedColor={muted}
+                          rows={[
+                            { label: 'Target', value: candidate.targetAccountId },
+                            { label: 'Score', value: fmtNumber(candidate.score, 2) },
+                            { label: 'Computed', value: fmtAdminTime(candidate.computedAt) },
+                          ]}
+                        />
+                      ))}
                     </View>
+                  ) : null}
+                  {pairScore.pair ? (
+                    <PairSnapshotCard
+                      pair={pairScore.pair}
+                      rerankEvent={latestRerankByCandidateId[pairScore.pair.targetAccountId]}
+                      mutedColor={muted}
+                    />
                   ) : null}
                 </>
               )}
@@ -1494,6 +1981,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
+  narrativeText: {
+    fontSize: 13,
+    lineHeight: 19,
+  },
   signalGroup: {
     gap: 8,
   },
@@ -1509,11 +2000,89 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(148, 163, 184, 0.32)',
     paddingHorizontal: 10,
     paddingVertical: 8,
-    gap: 2,
+    gap: 8,
   },
   signalItemToken: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  itemHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  itemHeaderText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  scoreBadge: {
+    flexShrink: 0,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.45)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  metricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  metricCard: {
+    flexGrow: 1,
+    flexBasis: 132,
+    minWidth: 132,
+    borderWidth: 1,
+    borderLeftWidth: 3,
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+    gap: 2,
+  },
+  metricLabel: {
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0,
+  },
+  metricValue: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  metricNote: {
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  detailGrid: {
+    gap: 5,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  detailLabel: {
+    width: 112,
+    flexShrink: 0,
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: '700',
+  },
+  detailValue: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  scoreBreakdown: {
+    gap: 8,
   },
   conceptBlock: {
     gap: 2,

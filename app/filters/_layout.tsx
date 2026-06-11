@@ -39,7 +39,6 @@ function FiltersStack() {
         name="index"
         options={{
           title: 'Filters',
-          headerBackTitleVisible: false,
           headerLeft: () => (
             <Pressable onPress={handleBack}>
               <ThemedText>Back</ThemedText>
@@ -50,7 +49,6 @@ function FiltersStack() {
       <Stack.Screen
         name="[category]"
         options={{
-          headerBackTitleVisible: false,
           headerShown: false,
           presentation: 'transparentModal',
         }}

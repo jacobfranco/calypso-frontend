@@ -2,15 +2,19 @@ import React from 'react';
 import {
   ActivityIndicator,
   Pressable,
+  ScrollView,
   StyleSheet,
   View,
+  type TextStyle,
+  type ViewStyle,
 } from 'react-native';
 import { Link } from 'expo-router';
 
+import { flattenStyle } from '@/components/style-utils';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { useAuth } from '@/lib/auth';
 import { useThemeColor } from '@/hooks/use-theme-color';
+import { useAuth } from '@/lib/auth';
 
 export default function ProfileScreen() {
   const { account, status, error, logout } = useAuth();
@@ -41,96 +45,109 @@ export default function ProfileScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <View style={styles.header}>
-        <View style={styles.headerRow}>
-          <ThemedText type="title">Your profile</ThemedText>
-          {account ? (
-            <Pressable
-              onPress={handleLogout}
-              style={[styles.headerLogout, { borderColor: cardBorder }]}
-            >
-              <ThemedText style={[styles.headerLogoutText, { color: muted }]}>Log out</ThemedText>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
-
-      {status === 'loading' && (
-        <View style={styles.stateBlock}>
-          <ActivityIndicator />
-          <ThemedText>Loading…</ThemedText>
-        </View>
-      )}
-
-      {activeError && (
-        <View style={styles.stateBlock}>
-          <ThemedText type="defaultSemiBold">Couldn&apos;t continue</ThemedText>
-          <ThemedText style={[styles.muted, { color: muted }]}>{activeError}</ThemedText>
-        </View>
-      )}
-
-      {!account && status !== 'loading' && (
-        <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-          <ThemedText type="defaultSemiBold">Welcome</ThemedText>
-          <ThemedText style={[styles.muted, { color: muted }]}>
-            Complete onboarding to continue.
-          </ThemedText>
-          <Link href="/onboarding" asChild>
-            <Pressable style={[styles.primaryButton, { backgroundColor: primaryBg }]}>
-              <ThemedText style={[styles.primaryButtonText, { color: primaryText }]}>
-                Start onboarding
-              </ThemedText>
-            </Pressable>
-          </Link>
-        </View>
-      )}
-
-      {account && status !== 'loading' && (
-        <View style={[styles.card, { borderColor: cardBorder, backgroundColor: cardBg }]}>
-          <Link href="/filters" asChild>
-            <Pressable style={[styles.secondaryButton, { borderColor: borderColor }]}>
-              <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>
-                Edit filters
-              </ThemedText>
-            </Pressable>
-          </Link>
-          <Link href="/prompts" asChild>
-            <Pressable style={[styles.secondaryButton, { borderColor: borderColor }]}>
-              <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>
-                Edit prompts
-              </ThemedText>
-            </Pressable>
-          </Link>
-          <Link href="/facecard-photos" asChild>
-            <Pressable style={[styles.secondaryButton, { borderColor: borderColor }]}>
-              <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>
-                Edit facecard photos
-              </ThemedText>
-            </Pressable>
-          </Link>
-          <Link href="/admin" asChild>
-            <Pressable style={[styles.secondaryButton, { borderColor: borderColor }]}>
-              <ThemedText style={[styles.secondaryButtonText, { color: muted }]}>
-                Admin
-              </ThemedText>
-            </Pressable>
-          </Link>
-          <View style={styles.row}>
-            <ThemedText type="defaultSemiBold">Name</ThemedText>
-            <ThemedText>{account.name}</ThemedText>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <View style={styles.header}>
+          <View style={styles.headerRow}>
+            <ThemedText type="title">Your profile</ThemedText>
+            {account ? (
+              <Pressable
+                onPress={handleLogout}
+                style={flattenStyle<ViewStyle>([styles.headerLogout, { borderColor: cardBorder }])}
+              >
+                <ThemedText style={flattenStyle<TextStyle>([styles.headerLogoutText, { color: muted }])}>
+                  Log out
+                </ThemedText>
+              </Pressable>
+            ) : null}
           </View>
-          <View style={styles.row}>
-            <ThemedText type="defaultSemiBold">Account ID</ThemedText>
-            <ThemedText>{account.id}</ThemedText>
+        </View>
+
+        {status === 'loading' && (
+          <View style={styles.stateBlock}>
+            <ActivityIndicator />
+            <ThemedText>Loading...</ThemedText>
           </View>
-          {account.created_at ? (
+        )}
+
+        {activeError && (
+          <View style={styles.stateBlock}>
+            <ThemedText type="defaultSemiBold">Couldn&apos;t continue</ThemedText>
+            <ThemedText style={flattenStyle<TextStyle>([styles.muted, { color: muted }])}>
+              {activeError}
+            </ThemedText>
+          </View>
+        )}
+
+        {!account && status !== 'loading' && (
+          <View style={flattenStyle<ViewStyle>([styles.card, { borderColor: cardBorder, backgroundColor: cardBg }])}>
+            <ThemedText type="defaultSemiBold">Welcome</ThemedText>
+            <ThemedText style={flattenStyle<TextStyle>([styles.muted, { color: muted }])}>
+              Complete onboarding to continue.
+            </ThemedText>
+            <Link href="/onboarding" asChild>
+              <Pressable style={flattenStyle<ViewStyle>([styles.primaryButton, { backgroundColor: primaryBg }])}>
+                <ThemedText style={flattenStyle<TextStyle>([styles.primaryButtonText, { color: primaryText }])}>
+                  Start onboarding
+                </ThemedText>
+              </Pressable>
+            </Link>
+          </View>
+        )}
+
+        {account && status !== 'loading' && (
+          <View style={flattenStyle<ViewStyle>([styles.card, { borderColor: cardBorder, backgroundColor: cardBg }])}>
+            <Link href="/filters" asChild>
+              <Pressable style={flattenStyle<ViewStyle>([styles.secondaryButton, { borderColor }])}>
+                <ThemedText style={flattenStyle<TextStyle>([styles.secondaryButtonText, { color: muted }])}>
+                  Edit filters
+                </ThemedText>
+              </Pressable>
+            </Link>
+            <Link href="/prompts" asChild>
+              <Pressable style={flattenStyle<ViewStyle>([styles.secondaryButton, { borderColor }])}>
+                <ThemedText style={flattenStyle<TextStyle>([styles.secondaryButtonText, { color: muted }])}>
+                  Edit prompts
+                </ThemedText>
+              </Pressable>
+            </Link>
+            <Link href="/match-standards" asChild>
+              <Pressable style={flattenStyle<ViewStyle>([styles.secondaryButton, { borderColor }])}>
+                <ThemedText style={flattenStyle<TextStyle>([styles.secondaryButtonText, { color: muted }])}>
+                  Edit match standards
+                </ThemedText>
+              </Pressable>
+            </Link>
+            <Link href="/facecard-photos" asChild>
+              <Pressable style={flattenStyle<ViewStyle>([styles.secondaryButton, { borderColor }])}>
+                <ThemedText style={flattenStyle<TextStyle>([styles.secondaryButtonText, { color: muted }])}>
+                  Edit facecard photos
+                </ThemedText>
+              </Pressable>
+            </Link>
+            <Link href="/admin" asChild>
+              <Pressable style={flattenStyle<ViewStyle>([styles.secondaryButton, { borderColor }])}>
+                <ThemedText style={flattenStyle<TextStyle>([styles.secondaryButtonText, { color: muted }])}>
+                  Admin
+                </ThemedText>
+              </Pressable>
+            </Link>
             <View style={styles.row}>
-              <ThemedText type="defaultSemiBold">Created</ThemedText>
-              <ThemedText>{account.created_at}</ThemedText>
+              <ThemedText type="defaultSemiBold">Name</ThemedText>
+              <ThemedText>{account.name}</ThemedText>
             </View>
-          ) : null}
-        </View>
-      )}
+            <View style={styles.row}>
+              <ThemedText type="defaultSemiBold">Account ID</ThemedText>
+              <ThemedText>{account.id}</ThemedText>
+            </View>
+            {account.created_at ? (
+              <View style={styles.row}>
+                <ThemedText type="defaultSemiBold">Created</ThemedText>
+                <ThemedText>{account.created_at}</ThemedText>
+              </View>
+            ) : null}
+          </View>
+        )}
+      </ScrollView>
     </ThemedView>
   );
 }
@@ -138,8 +155,11 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  scroll: {
     padding: 20,
     paddingTop: 56,
+    paddingBottom: 40,
     gap: 24,
   },
   header: {
@@ -149,6 +169,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 12,
   },
   headerLogout: {
     paddingVertical: 6,

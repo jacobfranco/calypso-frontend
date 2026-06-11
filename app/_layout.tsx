@@ -48,6 +48,7 @@ function RootNavigator() {
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="filters" options={{ headerShown: false }} />
       <Stack.Screen name="prompts" options={{ headerShown: false }} />
+      <Stack.Screen name="match-standards" options={{ headerShown: false }} />
       <Stack.Screen name="facecard-photos" options={{ headerShown: false }} />
       <Stack.Screen name="admin" options={{ headerShown: false }} />
       <Stack.Screen name="admin-signal-concepts" options={{ headerShown: false }} />

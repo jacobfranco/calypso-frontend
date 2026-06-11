@@ -1,39 +1,40 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   View,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import * as Location from 'expo-location';
 import MultiSlider from '@ptomasroos/react-native-multi-slider';
+
 import { AgeRangeSlider } from '@/components/age-range-slider';
 import { ThemedText } from '@/components/themed-text';
-import {
-  Filters,
-  Importance,
-  TagsResponse,
-  fetchTags,
-} from '@/lib/api';
+import { ThemedView } from '@/components/themed-view';
+import { Filters, TagsResponse, fetchTags } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useFiltersDraft } from '@/lib/filters-draft';
-import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useThemeColor } from '@/hooks/use-theme-color';
-import { formatTagGroupLabel, formatTagLabel } from '@/lib/tag-labels';
+import { formatTagLabel } from '@/lib/tag-labels';
+import {
+  formatCoordinateInput,
+  formatCoordinateLabel,
+  getCurrentLocationSnapshot,
+  getLocationErrorMessage,
+  normalizeCountryCodeInput,
+  parseLatitudeInput,
+  parseLongitudeInput,
+} from '@/lib/location';
 
-const IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
-  { label: 'Not important', value: 'NOT_IMPORTANT' },
-  { label: 'Preference', value: 'PREFERENCE' },
-  { label: 'Dealbreaker', value: 'DEALBREAKER' },
-];
-
-const ALIGNMENT_IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
-  { label: 'Not important', value: 'NOT_IMPORTANT' },
-  { label: 'Nice to have', value: 'PREFERENCE' },
-  { label: 'Important', value: 'DEALBREAKER' },
-];
+const CATEGORY_LABELS: Record<string, string> = {
+  relationship: 'Relationship mode',
+  gender: 'Gender',
+  age: 'Age',
+  location: 'Location',
+};
 
 const RELATIONSHIP_MODES = ['focused', 'balanced', 'exploratory'];
 const AGE_MIN = 18;
@@ -43,70 +44,36 @@ const RADIUS_MAX = 100;
 const COUNTRY_RADIUS_KM = 3000;
 const WORLDWIDE_RADIUS_KM = 30000;
 
-type TagRole = 'self' | 'seeking';
-
-type ImportancePalette = Record<Importance, { bg: string; border: string; text: string }>;
-
-type LocationPermission = Location.PermissionStatus | 'unknown';
-
-const CATEGORY_LABELS: Record<string, string> = {
-  relationship: 'Relationship mode',
-  gender: 'Gender',
-  age: 'Age',
-  location: 'Location',
-  religion: 'Religion',
-  politics: 'Politics',
-  lifestyle: 'Lifestyle',
-};
+type LocationScopeDraft = 'nearby' | 'country' | 'worldwide';
+type RadiusUnit = 'mi' | 'km';
 
 function flattenTags(groups: TagsResponse | null): string[] {
   if (!groups) return [];
   return Object.values(groups).flat();
 }
 
-const IMPORTANCE_RANK: Record<Importance, number> = {
-  NOT_IMPORTANT: 0,
-  PREFERENCE: 1,
-  DEALBREAKER: 2,
-};
-
-function maxImportance(left: Importance, right: Importance): Importance {
-  return IMPORTANCE_RANK[left] >= IMPORTANCE_RANK[right] ? left : right;
+function calculateAge(date: Date): number {
+  const today = new Date();
+  let years = today.getFullYear() - date.getFullYear();
+  const monthDiff = today.getMonth() - date.getMonth();
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < date.getDate())) {
+    years -= 1;
+  }
+  return years;
 }
 
-function buildLifestyleGroupImportance(
-  groups: TagsResponse | null,
-  prefs: Record<string, Importance>
-): Record<string, Importance> {
-  if (!groups) return {};
-  const result: Record<string, Importance> = {};
-  for (const [group, tags] of Object.entries(groups)) {
-    let groupImportance: Importance = 'NOT_IMPORTANT';
-    for (const tag of tags) {
-      const tagImportance = prefs[tag];
-      if (tagImportance) {
-        groupImportance = maxImportance(groupImportance, tagImportance);
-      }
-    }
-    result[group] = groupImportance;
-  }
-  return result;
-}
-
-
-function toggleItem(list: string[], value: string): string[] {
-  if (list.includes(value)) {
-    return list.filter((item) => item !== value);
-  }
-  return [...list, value];
+function defaultAgeRange(age: number | null): [number, number] {
+  if (age === null) return [AGE_MIN, Math.min(AGE_MIN + 4, AGE_MAX)];
+  const min = Math.max(AGE_MIN, age - 4);
+  const max = Math.min(AGE_MAX, age + 4);
+  return [min, Math.max(min, max)];
 }
 
 export default function FiltersCategoryScreen() {
   const { category } = useLocalSearchParams<{ category: string }>();
-  const { account, token } = useAuth();
-  const { draft, status: draftStatus, message: draftMessage, updateDraft } = useFiltersDraft();
-  const theme = useColorScheme() ?? 'light';
   const router = useRouter();
+  const { account } = useAuth();
+  const { draft, status: draftStatus, message: draftMessage, updateDraft } = useFiltersDraft();
 
   const borderColor = useThemeColor(
     { light: 'rgba(0, 0, 0, 0.12)', dark: 'rgba(255, 255, 255, 0.18)' },
@@ -114,10 +81,6 @@ export default function FiltersCategoryScreen() {
   );
   const cardBg = useThemeColor(
     { light: 'rgba(0, 0, 0, 0.02)', dark: 'rgba(255, 255, 255, 0.04)' },
-    'background'
-  );
-  const roleActiveBg = useThemeColor(
-    { light: 'rgba(0, 0, 0, 0.06)', dark: 'rgba(255, 255, 255, 0.08)' },
     'background'
   );
   const inputBg = useThemeColor(
@@ -129,139 +92,56 @@ export default function FiltersCategoryScreen() {
     { light: 'rgba(0, 0, 0, 0.6)', dark: 'rgba(255, 255, 255, 0.6)' },
     'text'
   );
-  const overlayColor = useThemeColor(
-    { light: 'rgba(0, 0, 0, 0.35)', dark: 'rgba(0, 0, 0, 0.7)' },
-    'background'
+  const placeholderColor = useThemeColor(
+    { light: 'rgba(0, 0, 0, 0.4)', dark: 'rgba(255, 255, 255, 0.4)' },
+    'text'
   );
-  const modalBg = useThemeColor({ light: '#fff', dark: '#1c1f24' }, 'background');
   const primaryBg = useThemeColor({ light: '#111', dark: '#f1f1f1' }, 'text');
   const primaryText = useThemeColor({ light: '#fff', dark: '#111' }, 'text');
 
-  const importancePalette: ImportancePalette = useMemo(() => {
-    if (theme === 'dark') {
-      return {
-        NOT_IMPORTANT: {
-          bg: 'rgba(255, 255, 255, 0.08)',
-          border: 'rgba(255, 255, 255, 0.24)',
-          text: 'rgba(255, 255, 255, 0.85)',
-        },
-        PREFERENCE: {
-          bg: 'rgba(86, 153, 255, 0.28)',
-          border: 'rgba(86, 153, 255, 0.6)',
-          text: '#cfe0ff',
-        },
-        DEALBREAKER: {
-          bg: 'rgba(148, 98, 255, 0.3)',
-          border: 'rgba(148, 98, 255, 0.6)',
-          text: '#e5d3ff',
-        },
-      };
-    }
-
-    return {
-      NOT_IMPORTANT: {
-        bg: 'rgba(0, 0, 0, 0.06)',
-        border: 'rgba(0, 0, 0, 0.2)',
-        text: 'rgba(0, 0, 0, 0.8)',
-      },
-      PREFERENCE: {
-        bg: 'rgba(86, 153, 255, 0.18)',
-        border: 'rgba(86, 153, 255, 0.5)',
-        text: '#0f2a5c',
-      },
-      DEALBREAKER: {
-        bg: 'rgba(148, 98, 255, 0.18)',
-        border: 'rgba(148, 98, 255, 0.5)',
-        text: '#2d0f5c',
-      },
-    };
-  }, [theme]);
-
+  const [genderTags, setGenderTags] = useState<TagsResponse | null>(null);
   const [tagStatus, setTagStatus] = useState<'idle' | 'loading' | 'error'>('idle');
-  const [message, setMessage] = useState<string | null>(null);
 
-  const [relationshipMode, setRelationshipMode] = useState<string>('');
-
-  const [genderSelf, setGenderSelf] = useState<string>('');
+  const [relationshipMode, setRelationshipMode] = useState('');
+  const [genderSelf, setGenderSelf] = useState('');
   const [genderSeeking, setGenderSeeking] = useState<string[]>([]);
-  const [genderImportance, setGenderImportance] = useState<Importance>('NOT_IMPORTANT');
-
-  const ageSelf = useMemo(() => {
-    if (!account?.birthday) return null;
-    const birthDate = new Date(account.birthday);
-    if (Number.isNaN(birthDate.getTime())) return null;
-    return calculateAge(birthDate);
-  }, [account?.birthday]);
   const [ageRange, setAgeRange] = useState<[number, number]>([AGE_MIN, AGE_MIN + 4]);
-  const [ageImportance, setAgeImportance] = useState<Importance>('NOT_IMPORTANT');
-
-  const [locationScope, setLocationScope] = useState<'nearby' | 'country' | 'worldwide'>('nearby');
-  const [radiusUnit, setRadiusUnit] = useState<'mi' | 'km'>('mi');
-  const [radiusValue, setRadiusValue] = useState(25);
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
+  const [latInput, setLatInput] = useState('');
+  const [lonInput, setLonInput] = useState('');
   const [countryCode, setCountryCode] = useState('');
   const [countryName, setCountryName] = useState('');
-  const [locationPermission, setLocationPermission] = useState<LocationPermission>('unknown');
-  const [locating, setLocating] = useState(false);
-  const [geocoding, setGeocoding] = useState(false);
   const [locationName, setLocationName] = useState('');
-  const autoLocateRef = useRef(false);
-
-  const [religionSelf, setReligionSelf] = useState('');
-  const [religionImportance, setReligionImportance] = useState<Importance>('NOT_IMPORTANT');
-
-  const [politicsSelf, setPoliticsSelf] = useState('');
-  const [politicsImportance, setPoliticsImportance] = useState<Importance>('NOT_IMPORTANT');
-
-  const [lifestyleSelf, setLifestyleSelf] = useState<string[]>([]);
-  const [lifestylePrefs, setLifestylePrefs] = useState<Record<string, Importance>>({});
-  const [lifestyleGroupImportance, setLifestyleGroupImportance] = useState<Record<string, Importance>>({});
-  const lifestyleGroupHydrated = useRef(false);
-
-  const [genderTags, setGenderTags] = useState<TagsResponse | null>(null);
-  const [religionTags, setReligionTags] = useState<TagsResponse | null>(null);
-  const [politicsTags, setPoliticsTags] = useState<TagsResponse | null>(null);
-  const [lifestyleTags, setLifestyleTags] = useState<TagsResponse | null>(null);
-
-  const [activeRole, setActiveRole] = useState<TagRole>('self');
+  const [locationScope, setLocationScope] = useState<LocationScopeDraft>('nearby');
+  const [radiusUnit, setRadiusUnit] = useState<RadiusUnit>('mi');
+  const [radiusValue, setRadiusValue] = useState(25);
+  const [locating, setLocating] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
 
   const genderList = useMemo(() => flattenTags(genderTags), [genderTags]);
-  const religionList = useMemo(() => flattenTags(religionTags), [religionTags]);
-  const politicsList = useMemo(() => flattenTags(politicsTags), [politicsTags]);
+  const ageSelf = useMemo(() => {
+    if (!account?.birthday) return null;
+    const date = new Date(account.birthday);
+    if (Number.isNaN(date.getTime())) return null;
+    return calculateAge(date);
+  }, [account?.birthday]);
 
   useEffect(() => {
+    if (category !== 'gender') return;
     let mounted = true;
-
-    const loadTags = async () => {
-      if (!category) return;
-      setTagStatus('loading');
-      try {
-        if (['gender', 'religion', 'politics', 'lifestyle'].includes(category)) {
-          const requests = [] as Promise<TagsResponse>[];
-          if (category === 'gender') requests.push(fetchTags('gender'));
-          if (category === 'religion') requests.push(fetchTags('religion'));
-          if (category === 'politics') requests.push(fetchTags('politics'));
-          if (category === 'lifestyle') requests.push(fetchTags('lifestyle'));
-          const [result] = await Promise.all(requests);
-          if (!mounted) return;
-          if (category === 'gender') setGenderTags(result);
-          if (category === 'religion') setReligionTags(result);
-          if (category === 'politics') setPoliticsTags(result);
-          if (category === 'lifestyle') setLifestyleTags(result);
-        } else {
-          setTagStatus('idle');
-          return;
-        }
-        setTagStatus('idle');
-      } catch (error) {
+    setTagStatus('loading');
+    fetchTags('gender')
+      .then((tags) => {
         if (!mounted) return;
-        setMessage(error instanceof Error ? error.message : 'Failed to load tag options');
+        setGenderTags(tags);
+        setTagStatus('idle');
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setGenderTags(null);
         setTagStatus('error');
-      }
-    };
-
-    loadTags();
+      });
     return () => {
       mounted = false;
     };
@@ -269,410 +149,160 @@ export default function FiltersCategoryScreen() {
 
   useEffect(() => {
     if (!draft) return;
-    hydrate(draft);
-  }, [draft, ageSelf]);
-
-  useEffect(() => {
-    setMessage(null);
-  }, [category]);
-
-  useEffect(() => {
-    if (category !== 'lifestyle') {
-      lifestyleGroupHydrated.current = false;
-      return;
-    }
-    if (!lifestyleTags) return;
-    if (lifestyleGroupHydrated.current) return;
-    setLifestyleGroupImportance(buildLifestyleGroupImportance(lifestyleTags, lifestylePrefs));
-    lifestyleGroupHydrated.current = true;
-  }, [category, lifestyleTags, lifestylePrefs]);
-
-  useEffect(() => {
-    let mounted = true;
-
-    const checkPermission = async () => {
-      if (category !== 'location') return;
-      try {
-        const { status } = await Location.getForegroundPermissionsAsync();
-        if (!mounted) return;
-        setLocationPermission(status);
-      } catch {
-        if (!mounted) return;
-        setLocationPermission('unknown');
-      }
-    };
-
-    checkPermission();
-    return () => {
-      mounted = false;
-    };
-  }, [category]);
-
-  const hydrate = (filters: Filters) => {
-    setRelationshipMode(filters.relationshipMode?.self ?? '');
-    setGenderSelf(filters.gender?.self ?? '');
-    setGenderSeeking(filters.gender?.seeking ?? []);
-    setGenderImportance(filters.gender?.importance ?? 'NOT_IMPORTANT');
-
-    if (filters.age?.min !== undefined && filters.age?.max !== undefined) {
-      setAgeRange([filters.age.min, filters.age.max]);
+    setRelationshipMode(draft.relationshipMode?.self ?? '');
+    setGenderSelf(draft.gender?.self ?? '');
+    setGenderSeeking(draft.gender?.seeking ?? []);
+    if (draft.age?.min !== undefined && draft.age?.max !== undefined) {
+      setAgeRange([draft.age.min, draft.age.max]);
     } else {
       setAgeRange(defaultAgeRange(ageSelf));
     }
-    setAgeImportance(filters.age?.importance ?? 'NOT_IMPORTANT');
-
-    const radiusKmValue = filters.location?.radiusKm;
-    const scope = filters.location?.scope;
-    setLat(filters.location?.lat ?? null);
-    setLon(filters.location?.lon ?? null);
-    setCountryCode(filters.location?.countryCode?.toUpperCase() ?? '');
-    if (scope === 'WORLDWIDE') {
-      setLocationScope('worldwide');
-    } else if (scope === 'COUNTRY') {
-      setLocationScope('country');
-    } else if (scope === 'NEARBY') {
-      setLocationScope('nearby');
-    } else if (radiusKmValue === WORLDWIDE_RADIUS_KM) {
-      setLocationScope('worldwide');
-    } else if (radiusKmValue === COUNTRY_RADIUS_KM) {
-      setLocationScope('country');
-    } else {
-      setLocationScope('nearby');
-      if (radiusKmValue !== undefined) {
-        const unit = filters.location?.distanceUnit === 'MI' ? 'mi' : 'km';
-        const value = unit === 'mi' ? radiusKmValue / 1.60934 : radiusKmValue;
-        setRadiusUnit(unit);
-        setRadiusValue(Math.round(value));
-      } else {
-        setRadiusValue(25);
-        setRadiusUnit('mi');
-      }
+    const nextLat = draft.location?.lat ?? null;
+    const nextLon = draft.location?.lon ?? null;
+    setLat(nextLat);
+    setLon(nextLon);
+    setLatInput(formatCoordinateInput(nextLat));
+    setLonInput(formatCoordinateInput(nextLon));
+    setCountryCode(draft.location?.countryCode?.toUpperCase() ?? '');
+    const scope = draft.location?.scope;
+    setLocationScope(scope === 'COUNTRY' ? 'country' : scope === 'WORLDWIDE' ? 'worldwide' : 'nearby');
+    setRadiusUnit(draft.location?.distanceUnit === 'KM' ? 'km' : 'mi');
+    const radiusKm = draft.location?.radiusKm;
+    if (radiusKm !== undefined && radiusKm !== COUNTRY_RADIUS_KM && radiusKm !== WORLDWIDE_RADIUS_KM) {
+      setRadiusValue(draft.location?.distanceUnit === 'KM'
+        ? Math.round(radiusKm)
+        : Math.round(radiusKm / 1.60934));
     }
-
-    setReligionSelf(filters.religion?.self ?? '');
-    setReligionImportance(filters.religion?.importance ?? 'NOT_IMPORTANT');
-
-    setPoliticsSelf(filters.politics?.self ?? '');
-    setPoliticsImportance(filters.politics?.importance ?? 'NOT_IMPORTANT');
-
-    const lifestyleSelfTags = filters.lifestyle?.self ?? [];
-    setLifestyleSelf(lifestyleSelfTags);
-    const lifestyleMap: Record<string, Importance> = {};
-    (filters.lifestyle?.preferences ?? []).forEach((pref) => {
-      if (lifestyleSelfTags.includes(pref.tag)) {
-        lifestyleMap[pref.tag] = pref.importance;
-      }
-    });
-    setLifestylePrefs(lifestyleMap);
-    lifestyleGroupHydrated.current = false;
-  };
-
-  const formatCoordinate = (value: number) => value.toFixed(3);
-
-  const formatPlacemark = (placemark: Location.LocationGeocodedAddress) => {
-    const city = placemark.city || placemark.subregion || '';
-    const region = placemark.region || '';
-    const country = placemark.country || '';
-    if (city && region) return `${city}, ${region}`;
-    if (city) return city;
-    if (region) return region;
-    return country;
-  };
+  }, [ageSelf, draft]);
 
   const locationLabel = useMemo(() => {
-    if (locating) return 'Locating…';
-    if (geocoding) return 'Finding location…';
     if (locationName) return locationName;
-    if (lat !== null && lon !== null) {
-      return `Lat ${formatCoordinate(lat)} · Lon ${formatCoordinate(lon)}`;
-    }
-    if (locationPermission === 'denied') {
-      return 'Enable location';
-    }
-    return 'Locate';
-  }, [geocoding, lat, locating, locationName, lon, locationPermission]);
+    if (lat !== null && lon !== null) return `Lat ${lat.toFixed(3)}, Lon ${lon.toFixed(3)}`;
+    return 'Use current location';
+  }, [lat, locationName, lon]);
 
-  useEffect(() => {
-    let mounted = true;
-
-    const runGeocode = async () => {
-      if (lat === null || lon === null) {
-        setLocationName('');
-        setCountryCode('');
-        setCountryName('');
-        return;
-      }
-      setGeocoding(true);
-      try {
-        const results = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lon });
-        if (!mounted) return;
-        const top = results[0];
-        setLocationName(top ? formatPlacemark(top) : '');
-        setCountryCode(top?.isoCountryCode ? top.isoCountryCode.toUpperCase() : '');
-        setCountryName(top?.country ?? '');
-      } catch {
-        if (!mounted) return;
-        setLocationName('');
-        setCountryCode('');
-        setCountryName('');
-      } finally {
-        if (mounted) setGeocoding(false);
-      }
-    };
-
-    runGeocode();
-    return () => {
-      mounted = false;
-    };
-  }, [lat, lon]);
-
-  const handleUseLocation = useCallback(async () => {
-    if (locating) return;
+  const handleUseLocation = async () => {
     setMessage(null);
     setLocating(true);
     try {
-      let { status } = await Location.getForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        const request = await Location.requestForegroundPermissionsAsync();
-        status = request.status;
-      }
-      setLocationPermission(status);
-      if (status !== 'granted') {
-        setMessage('Location is required to use the app. Please enable location services.');
-        return;
-      }
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      setLat(position.coords.latitude);
-      setLon(position.coords.longitude);
+      const location = await getCurrentLocationSnapshot();
+      setLat(location.latitude);
+      setLon(location.longitude);
+      setLatInput(formatCoordinateInput(location.latitude));
+      setLonInput(formatCoordinateInput(location.longitude));
+      setCountryCode(location.countryCode);
+      setCountryName(location.countryName);
+      setLocationName(location.locationName);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Unable to get location');
+      setMessage(getLocationErrorMessage(error));
     } finally {
       setLocating(false);
     }
-  }, [locating]);
+  };
 
-  useEffect(() => {
-    if (category !== 'location') return;
-    if (autoLocateRef.current) return;
-    autoLocateRef.current = true;
-    handleUseLocation();
-  }, [category, handleUseLocation]);
-
-  const handleSave = async () => {
-    if (!account || !category) return;
-    setMessage(null);
-
-    if (category === 'location') {
-      if (lat === null || lon === null) {
-        setMessage('Location is required to use the app. Please enable location services.');
-        return;
-      }
-      if (locationScope === 'country' && !countryCode) {
-        setMessage('We could not determine your country. Please try again.');
-        return;
-      }
-      if (locationScope === 'nearby' && radiusValue < RADIUS_MIN) {
-        setMessage('Please choose a valid nearby radius.');
-        return;
-      }
+  const handleManualLatChange = (text: string) => {
+    setLatInput(text);
+    const nextLat = parseLatitudeInput(text);
+    setLat(nextLat);
+    if (nextLat !== null && lon !== null) {
+      setLocationName(formatCoordinateLabel(nextLat, lon));
     }
+  };
 
-    const radiusKm =
-      locationScope === 'nearby'
-        ? radiusUnit === 'mi'
-          ? radiusValue * 1.60934
-          : radiusValue
-        : locationScope === 'country'
-          ? COUNTRY_RADIUS_KM
-          : WORLDWIDE_RADIUS_KM;
-    const scope =
-      locationScope === 'nearby'
-        ? 'NEARBY'
-        : locationScope === 'country'
-          ? 'COUNTRY'
-          : 'WORLDWIDE';
-    const distanceUnit = locationScope === 'nearby' ? (radiusUnit === 'mi' ? 'MI' : 'KM') : undefined;
+  const handleManualLonChange = (text: string) => {
+    setLonInput(text);
+    const nextLon = parseLongitudeInput(text);
+    setLon(nextLon);
+    if (lat !== null && nextLon !== null) {
+      setLocationName(formatCoordinateLabel(lat, nextLon));
+    }
+  };
 
-    const payload: Filters = {
-      relationshipMode: relationshipMode ? { self: relationshipMode } : undefined,
-      gender: {
+  const handleCountryCodeChange = (text: string) => {
+    setCountryCode(normalizeCountryCodeInput(text));
+    setCountryName('');
+  };
+
+  const handleSave = () => {
+    const next: Filters = { ...(draft ?? {}) };
+    if (category === 'relationship') {
+      next.relationshipMode = { self: relationshipMode };
+    }
+    if (category === 'gender') {
+      next.gender = {
         self: genderSelf || undefined,
-        seeking: genderSeeking.length ? genderSeeking : undefined,
-        importance: genderImportance,
-      },
-      age: {
+        seeking: genderSeeking,
+        importance: 'NOT_IMPORTANT',
+      };
+    }
+    if (category === 'age') {
+      next.age = {
         self: ageSelf ?? undefined,
         min: ageRange[0],
         max: ageRange[1],
-        importance: ageImportance,
-      },
-      location: {
-        lat: lat ?? undefined,
-        lon: lon ?? undefined,
+        importance: 'DEALBREAKER',
+      };
+    }
+    if (category === 'location') {
+      if (lat === null || lon === null) {
+        setMessage('Set your location before applying.');
+        return;
+      }
+      if (locationScope === 'country' && !countryCode) {
+        setMessage('Set a country code before applying country-wide search.');
+        return;
+      }
+      const radiusKm =
+        locationScope === 'worldwide'
+          ? WORLDWIDE_RADIUS_KM
+          : locationScope === 'country'
+            ? COUNTRY_RADIUS_KM
+            : radiusUnit === 'mi'
+              ? radiusValue * 1.60934
+              : radiusValue;
+      next.location = {
+        lat,
+        lon,
         radiusKm,
-        scope,
+        scope: locationScope === 'country' ? 'COUNTRY' : locationScope === 'worldwide' ? 'WORLDWIDE' : 'NEARBY',
         countryCode: countryCode || undefined,
-        distanceUnit,
-      },
-    };
-
-    if (religionSelf) {
-      payload.religion = {
-        self: religionSelf || undefined,
-        importance: religionImportance,
+        distanceUnit: radiusUnit === 'mi' ? 'MI' : 'KM',
       };
     }
-
-    if (politicsSelf) {
-      payload.politics = {
-        self: politicsSelf || undefined,
-        importance: politicsImportance,
-      };
-    }
-
-    if (lifestyleSelf.length || Object.keys(lifestylePrefs).length) {
-      const lifestyleSelfSet = new Set(lifestyleSelf);
-      const lifestylePreferences = Object.entries(lifestylePrefs)
-        .filter(([tag]) => lifestyleSelfSet.has(tag))
-        .map(([tag, importance]) => ({ tag, importance }));
-      payload.lifestyle = {
-        self: lifestyleSelf.length ? lifestyleSelf : undefined,
-        preferences: lifestylePreferences.length ? lifestylePreferences : undefined,
-      };
-    }
-
-    updateDraft(payload);
+    updateDraft(next);
     router.back();
   };
 
-  const setLifestyleGroupImportanceValue = (group: string, importance: Importance) => {
-    setLifestyleGroupImportance((prev) => ({ ...prev, [group]: importance }));
-    if (!lifestyleTags) return;
-    const groupTags = lifestyleTags[group] ?? [];
-    if (!groupTags.length) return;
-    setLifestylePrefs((prev) => {
-      const next = { ...prev };
-      for (const tag of groupTags) {
-        if (!lifestyleSelf.includes(tag)) {
-          delete next[tag];
-          continue;
-        }
-        if (importance === 'NOT_IMPORTANT') {
-          delete next[tag];
-          continue;
-        }
-        next[tag] = importance;
-      }
-      return next;
-    });
-  };
-
-  const toggleLifestyleSelfTag = (group: string, groupTags: string[], tag: string) => {
-    const groupImportance = lifestyleGroupImportance[group] ?? 'NOT_IMPORTANT';
-    const groupTagSet = new Set(groupTags);
-    const isSelected = lifestyleSelf.includes(tag);
-    const nextSelf = isSelected
-      ? lifestyleSelf.filter((t) => !groupTagSet.has(t))
-      : [...lifestyleSelf.filter((t) => !groupTagSet.has(t)), tag];
-
-    setLifestyleSelf(nextSelf);
-    setLifestylePrefs((prev) => {
-      const next = { ...prev };
-      for (const t of groupTags) {
-        if (nextSelf.includes(t) && groupImportance !== 'NOT_IMPORTANT') {
-          next[t] = groupImportance;
-        } else {
-          delete next[t];
-        }
-      }
-      return next;
-    });
-  };
-
-  const handleSelectTag = (tag: string) => {
-    if (!category) return;
-
-    if (category === 'gender') {
-      if (activeRole === 'self') {
-        setGenderSelf(genderSelf === tag ? '' : tag);
-        setGenderSeeking(genderSeeking.filter((t) => t !== tag));
-      } else {
-        setGenderSelf(genderSelf === tag ? '' : genderSelf);
-        setGenderSeeking(toggleItem(genderSeeking, tag));
-      }
-      return;
-    }
-
-    if (category === 'religion') {
-      setReligionSelf(religionSelf === tag ? '' : tag);
-      return;
-    }
-
-    if (category === 'politics') {
-      setPoliticsSelf(politicsSelf === tag ? '' : tag);
-      return;
-    }
-  };
-
-  const title = CATEGORY_LABELS[category ?? ''] ?? 'Filters';
-
-  if (!account || !token) {
+  if (!account) {
     return (
-      <View style={[styles.modalOverlay, { backgroundColor: overlayColor }]}>
-        <View style={[styles.modalCard, { backgroundColor: modalBg, borderColor }]}>
-          <View style={styles.modalHeader}>
-            <ThemedText type="defaultSemiBold">{title}</ThemedText>
-            <Pressable onPress={() => router.back()}>
-              <ThemedText style={[styles.linkText, { color: muted }]}>Close</ThemedText>
-            </Pressable>
-          </View>
-          <ThemedText type="subtitle">Log in to edit your filters.</ThemedText>
-        </View>
-      </View>
-    );
-  }
-
-  if (draftStatus === 'loading' && !draft) {
-    return (
-      <View style={[styles.modalOverlay, { backgroundColor: overlayColor }]}>
-        <View style={[styles.modalCard, { backgroundColor: modalBg, borderColor }]}>
-          <View style={styles.stateBlock}>
-            <ActivityIndicator />
-            <ThemedText>Loading…</ThemedText>
-          </View>
-        </View>
-      </View>
+      <ThemedView style={styles.centered}>
+        <ThemedText type="subtitle">Log in to edit filters.</ThemedText>
+      </ThemedView>
     );
   }
 
   return (
-    <View style={[styles.modalOverlay, { backgroundColor: overlayColor }]}>
-      <View style={[styles.modalCard, { backgroundColor: modalBg, borderColor }]}>
-        <View style={styles.modalHeader}>
-          <ThemedText type="defaultSemiBold">{title}</ThemedText>
-          <Pressable onPress={() => router.back()}>
-            <ThemedText style={[styles.linkText, { color: muted }]}>Close</ThemedText>
-          </Pressable>
+    <ThemedView style={styles.container}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <View style={styles.header}>
+          <ThemedText type="title">{CATEGORY_LABELS[category ?? ''] ?? 'Filters'}</ThemedText>
+          <ThemedText style={[styles.mutedText, { color: muted }]}>
+            Filters only decide who can enter your match pool.
+          </ThemedText>
         </View>
-        <ScrollView contentContainerStyle={styles.content}>
-        {(tagStatus === 'loading' || draftStatus === 'loading') && (
-          <View style={styles.stateBlock}>
+
+        {draftStatus === 'loading' && (
+          <View style={styles.stateRow}>
             <ActivityIndicator />
-            <ThemedText>Loading…</ThemedText>
+            <ThemedText>Loading filters...</ThemedText>
           </View>
         )}
 
-        {message && (
-          <View style={styles.stateBlock}>
-            <ThemedText style={[styles.muted, { color: muted }]}>{message}</ThemedText>
-          </View>
-        )}
-
-        {!message && draftMessage && (
-          <View style={styles.stateBlock}>
-            <ThemedText style={[styles.muted, { color: muted }]}>{draftMessage}</ThemedText>
+        {(message || draftMessage || tagStatus === 'error') && (
+          <View style={[styles.notice, { borderColor, backgroundColor: cardBg }]}>
+            <ThemedText style={[styles.noticeText, { color: muted }]}>
+              {message || draftMessage || 'Unable to load tag options.'}
+            </ThemedText>
           </View>
         )}
 
@@ -681,15 +311,38 @@ export default function FiltersCategoryScreen() {
             <ChipRow
               options={RELATIONSHIP_MODES}
               selected={relationshipMode ? [relationshipMode] : []}
-              onToggle={(value) => setRelationshipMode(value)}
+              onToggle={setRelationshipMode}
               borderColor={borderColor}
-              palette={importancePalette}
+              activeBg={cardBg}
             />
             <ThemedText style={[styles.helperText, { color: muted }]}>
-              Focused: fewer matches, higher compatibility.{"\n"}
-              Balanced: moderate volume, moderate threshold.{"\n"}
-              Exploratory: wider net, lower threshold.
+              Focused has a higher match floor. Exploratory keeps the pool wider.
             </ThemedText>
+          </Section>
+        )}
+
+        {category === 'gender' && (
+          <Section title="Gender">
+            <ThemedText style={[styles.label, { color: muted }]}>Self</ThemedText>
+            <ChipRow
+              options={genderList}
+              selected={genderSelf ? [genderSelf] : []}
+              onToggle={(tag) => setGenderSelf(genderSelf === tag ? '' : tag)}
+              borderColor={borderColor}
+              activeBg={cardBg}
+            />
+            <ThemedText style={[styles.label, { color: muted }]}>Seeking</ThemedText>
+            <ChipRow
+              options={genderList}
+              selected={genderSeeking}
+              onToggle={(tag) => {
+                setGenderSeeking((prev) => (
+                  prev.includes(tag) ? prev.filter((item) => item !== tag) : [...prev, tag]
+                ));
+              }}
+              borderColor={borderColor}
+              activeBg={cardBg}
+            />
           </Section>
         )}
 
@@ -698,9 +351,7 @@ export default function FiltersCategoryScreen() {
             <View style={styles.ageRow}>
               <ThemedText style={[styles.label, { color: muted }]}>Your age</ThemedText>
               <View style={[styles.ageValue, { borderColor, backgroundColor: inputBg }]}>
-                <ThemedText>
-                  {ageSelf !== null ? `${ageSelf}` : 'Not available'}
-                </ThemedText>
+                <ThemedText>{ageSelf !== null ? `${ageSelf}` : 'Not available'}</ThemedText>
               </View>
             </View>
             <AgeRangeSlider
@@ -718,12 +369,6 @@ export default function FiltersCategoryScreen() {
               trackStyle={styles.sliderTrack}
               containerStyle={styles.sliderContainer}
             />
-            <ImportanceRow
-              value={ageImportance}
-              onChange={setAgeImportance}
-              palette={importancePalette}
-              borderColor={borderColor}
-            />
           </Section>
         )}
 
@@ -739,7 +384,7 @@ export default function FiltersCategoryScreen() {
                   key={option.value}
                   label={option.label}
                   selected={locationScope === option.value}
-                  onPress={() => setLocationScope(option.value as typeof locationScope)}
+                  onPress={() => setLocationScope(option.value as LocationScopeDraft)}
                   borderColor={borderColor}
                   activeBg={cardBg}
                 />
@@ -750,17 +395,68 @@ export default function FiltersCategoryScreen() {
               style={({ pressed }) => [
                 styles.locationPill,
                 { borderColor, backgroundColor: cardBg, opacity: locating ? 0.7 : 1 },
-                pressed && !locating ? styles.locationPillPressed : null,
+                pressed && !locating ? styles.pressed : null,
               ]}
             >
-              <ThemedText
-                numberOfLines={1}
-                ellipsizeMode="tail"
-                style={[styles.locationPillText, { color: muted }]}
-              >
-                {locating ? 'Locating…' : locationLabel}
+              <ThemedText numberOfLines={1} style={[styles.locationPillText, { color: muted }]}>
+                {locating ? 'Locating...' : locationLabel}
               </ThemedText>
             </Pressable>
+            {(Platform.OS === 'web' || Boolean(message)) ? (
+              <View style={[styles.manualLocationBox, { borderColor, backgroundColor: cardBg }]}>
+                <ThemedText style={[styles.label, { color: muted }]}>Manual location</ThemedText>
+                <View style={styles.manualLocationRow}>
+                  <View style={styles.manualLocationField}>
+                    <ThemedText style={[styles.label, { color: muted }]}>Latitude</ThemedText>
+                    <TextInput
+                      value={latInput}
+                      onChangeText={handleManualLatChange}
+                      placeholder="40.7128"
+                      placeholderTextColor={placeholderColor}
+                      keyboardType="numbers-and-punctuation"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      style={[
+                        styles.input,
+                        { borderColor, backgroundColor: inputBg, color: inputText },
+                      ]}
+                    />
+                  </View>
+                  <View style={styles.manualLocationField}>
+                    <ThemedText style={[styles.label, { color: muted }]}>Longitude</ThemedText>
+                    <TextInput
+                      value={lonInput}
+                      onChangeText={handleManualLonChange}
+                      placeholder="-74.006"
+                      placeholderTextColor={placeholderColor}
+                      keyboardType="numbers-and-punctuation"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      style={[
+                        styles.input,
+                        { borderColor, backgroundColor: inputBg, color: inputText },
+                      ]}
+                    />
+                  </View>
+                </View>
+                <View style={styles.manualLocationField}>
+                  <ThemedText style={[styles.label, { color: muted }]}>Country code</ThemedText>
+                  <TextInput
+                    value={countryCode}
+                    onChangeText={handleCountryCodeChange}
+                    placeholder="US"
+                    placeholderTextColor={placeholderColor}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    maxLength={2}
+                    style={[
+                      styles.input,
+                      { borderColor, backgroundColor: inputBg, color: inputText },
+                    ]}
+                  />
+                </View>
+              </View>
+            ) : null}
             {locationScope === 'nearby' && (
               <View style={styles.sliderBlock}>
                 <View style={styles.sliderHeader}>
@@ -790,7 +486,7 @@ export default function FiltersCategoryScreen() {
                       key={option.value}
                       label={option.label}
                       selected={radiusUnit === option.value}
-                      onPress={() => setRadiusUnit(option.value as typeof radiusUnit)}
+                      onPress={() => setRadiusUnit(option.value as RadiusUnit)}
                       borderColor={borderColor}
                       activeBg={cardBg}
                     />
@@ -803,129 +499,14 @@ export default function FiltersCategoryScreen() {
                 Using {countryName || countryCode || 'your country'}.
               </ThemedText>
             )}
-            {locationScope === 'worldwide' && (
-              <ThemedText style={[styles.helperText, { color: muted }]}>
-                Search is global, no radius needed.
-              </ThemedText>
-            )}
           </Section>
-        )}
-
-        {category === 'gender' && (
-          <TagSections
-            selfLabel="Self"
-            seekingLabel="Seeking"
-            allLabel="All tags"
-            selfTags={genderSelf ? [genderSelf] : []}
-            seekingTags={genderSeeking}
-            allTags={genderList}
-            importance={genderImportance}
-            importanceByTag={{}}
-            activeRole={activeRole}
-            onRoleChange={setActiveRole}
-            onSelectTag={handleSelectTag}
-            showImportance
-            onImportanceChange={setGenderImportance}
-            roleActiveBg={roleActiveBg}
-            borderColor={borderColor}
-            palette={importancePalette}
-            muted={muted}
-          />
-        )}
-
-        {category === 'religion' && (
-          <Section title="Religion">
-            <ThemedText style={[styles.label, { color: muted }]}>Your religion</ThemedText>
-            <ChipRow
-              options={religionList}
-              selected={religionSelf ? [religionSelf] : []}
-              onToggle={(tag) => setReligionSelf(religionSelf === tag ? '' : tag)}
-              palette={importancePalette}
-              borderColor={borderColor}
-            />
-            <ThemedText style={[styles.label, { color: muted }]}>
-              How important is religious alignment?
-            </ThemedText>
-            <ImportanceRow
-              value={religionImportance}
-              onChange={setReligionImportance}
-              palette={importancePalette}
-              borderColor={borderColor}
-              options={ALIGNMENT_IMPORTANCE_OPTIONS}
-            />
-          </Section>
-        )}
-
-        {category === 'politics' && (
-          <Section title="Politics">
-            <ThemedText style={[styles.label, { color: muted }]}>Your politics</ThemedText>
-            <ChipRow
-              options={politicsList}
-              selected={politicsSelf ? [politicsSelf] : []}
-              onToggle={(tag) => setPoliticsSelf(politicsSelf === tag ? '' : tag)}
-              palette={importancePalette}
-              borderColor={borderColor}
-            />
-            <ThemedText style={[styles.label, { color: muted }]}>
-              How important is political alignment?
-            </ThemedText>
-            <ImportanceRow
-              value={politicsImportance}
-              onChange={setPoliticsImportance}
-              palette={importancePalette}
-              borderColor={borderColor}
-              options={ALIGNMENT_IMPORTANCE_OPTIONS}
-            />
-          </Section>
-        )}
-
-        {category === 'lifestyle' && (
-          <View style={styles.section}>
-            {(lifestyleTags ? Object.entries(lifestyleTags) : []).map(([group, tags]) => {
-              const groupImportance = lifestyleGroupImportance[group] ?? 'NOT_IMPORTANT';
-              const groupSelfTags = lifestyleSelf.filter((tag) => tags.includes(tag));
-
-              return (
-                <View
-                  key={group}
-                  style={[
-                    styles.groupSection,
-                    { borderColor, backgroundColor: cardBg },
-                  ]}
-                >
-                  <ThemedText type="defaultSemiBold">{formatTagGroupLabel(group)}</ThemedText>
-                  <ThemedText style={[styles.label, { color: muted }]}>Your lifestyle</ThemedText>
-                  <ChipRow
-                    options={tags}
-                    selected={groupSelfTags}
-                    onToggle={(tag) => toggleLifestyleSelfTag(group, tags, tag)}
-                    palette={importancePalette}
-                    borderColor={borderColor}
-                  />
-                  <ThemedText style={[styles.label, { color: muted }]}>
-                    How important is it that your partner matches your selections?
-                  </ThemedText>
-                  <ImportanceRow
-                    value={groupImportance}
-                    onChange={(value) => setLifestyleGroupImportanceValue(group, value)}
-                    palette={importancePalette}
-                    borderColor={borderColor}
-                  />
-                </View>
-              );
-            })}
-          </View>
         )}
 
         <Pressable style={[styles.saveButton, { backgroundColor: primaryBg }]} onPress={handleSave}>
-          <ThemedText style={[styles.saveButtonText, { color: primaryText }]}>
-            Apply
-          </ThemedText>
+          <ThemedText style={[styles.saveButtonText, { color: primaryText }]}>Apply</ThemedText>
         </Pressable>
-        </ScrollView>
-      </View>
-
-    </View>
+      </ScrollView>
+    </ThemedView>
   );
 }
 
@@ -934,6 +515,37 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     <View style={styles.section}>
       <ThemedText type="defaultSemiBold">{title}</ThemedText>
       {children}
+    </View>
+  );
+}
+
+function ChipRow({
+  options,
+  selected,
+  onToggle,
+  borderColor,
+  activeBg,
+}: {
+  options: string[];
+  selected: string[];
+  onToggle: (value: string) => void;
+  borderColor: string;
+  activeBg: string;
+}) {
+  return (
+    <View style={styles.chipRow}>
+      {options.map((option) => {
+        const active = selected.includes(option);
+        return (
+          <Pressable
+            key={option}
+            onPress={() => onToggle(option)}
+            style={[styles.chip, { borderColor }, active && { backgroundColor: activeBg }]}
+          >
+            <ThemedText style={styles.chipText}>{formatTagLabel(option)}</ThemedText>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -954,363 +566,110 @@ function OptionPill({
   return (
     <Pressable
       onPress={onPress}
-      style={[
-        styles.optionPill,
-        { borderColor },
-        selected && { backgroundColor: activeBg },
-      ]}
+      style={[styles.optionPill, { borderColor }, selected && { backgroundColor: activeBg }]}
     >
-      <ThemedText style={[styles.optionPillText, selected && styles.optionPillTextActive]}>
-        {label}
-      </ThemedText>
+      <ThemedText style={styles.optionPillText}>{label}</ThemedText>
     </Pressable>
   );
 }
 
-function TagSections({
-  selfLabel,
-  seekingLabel,
-  allLabel,
-  selfTags,
-  seekingTags,
-  allTags,
-  importance,
-  importanceByTag,
-  activeRole,
-  onRoleChange,
-  onSelectTag,
-  showImportance = false,
-  onImportanceChange,
-  importanceLabel,
-  importanceOptions,
-  roleActiveBg,
-  borderColor,
-  palette,
-  muted,
-}: {
-  selfLabel: string;
-  seekingLabel: string;
-  allLabel: string;
-  selfTags: string[];
-  seekingTags: string[];
-  allTags: string[];
-  importance: Importance;
-  importanceByTag: Record<string, Importance>;
-  activeRole: TagRole;
-  onRoleChange: (role: TagRole) => void;
-  onSelectTag: (tag: string) => void;
-  showImportance?: boolean;
-  onImportanceChange?: (value: Importance) => void;
-  importanceLabel?: string;
-  importanceOptions?: { label: string; value: Importance }[];
-  roleActiveBg: string;
-  borderColor: string;
-  palette: ImportancePalette;
-  muted: string;
-}) {
-  const formatRoleLabel = (tags: string[]) => {
-    if (!tags.length) return '+';
-    const firstTag = formatTagLabel(tags[0]);
-    if (tags.length === 1) return firstTag;
-    return `${firstTag} +${tags.length - 1}`;
-  };
-
-  return (
-    <View style={styles.section}>
-      <View style={styles.roleRowLabels}>
-        <ThemedText style={[styles.roleLabel, { color: muted }]}>{selfLabel}</ThemedText>
-        <ThemedText style={[styles.roleLabel, { color: muted }]}>{seekingLabel}</ThemedText>
-      </View>
-      <View style={styles.roleRow}>
-        <Pressable
-          style={[
-            styles.rolePill,
-            { borderColor },
-            activeRole === 'self' && { backgroundColor: roleActiveBg },
-          ]}
-          onPress={() => onRoleChange('self')}
-        >
-          <ThemedText style={[styles.rolePillText, activeRole === 'self' && styles.rolePillTextActive]}>
-            {formatRoleLabel(selfTags)}
-          </ThemedText>
-        </Pressable>
-        <Pressable
-          style={[
-            styles.rolePill,
-            { borderColor },
-            activeRole === 'seeking' && { backgroundColor: roleActiveBg },
-          ]}
-          onPress={() => onRoleChange('seeking')}
-        >
-          <ThemedText style={[styles.rolePillText, activeRole === 'seeking' && styles.rolePillTextActive]}>
-            {formatRoleLabel(seekingTags)}
-          </ThemedText>
-        </Pressable>
-      </View>
-      {showImportance && activeRole === 'seeking' && onImportanceChange ? (
-        <View style={styles.section}>
-          {importanceLabel ? (
-            <ThemedText style={[styles.label, { color: muted }]}>{importanceLabel}</ThemedText>
-          ) : null}
-          <ImportanceRow
-            value={importance}
-            onChange={onImportanceChange}
-            palette={palette}
-            borderColor={borderColor}
-            options={importanceOptions}
-          />
-        </View>
-      ) : null}
-      <ThemedText style={[styles.label, { color: muted }]}>{allLabel}</ThemedText>
-      <ChipRow
-        options={allTags}
-        selected={activeRole === 'self' ? selfTags : seekingTags}
-        onToggle={onSelectTag}
-        palette={palette}
-        borderColor={borderColor}
-        importance={importance}
-        importanceByTag={importanceByTag}
-      />
-    </View>
-  );
-}
-
-function calculateAge(date: Date): number {
-  const today = new Date();
-  let years = today.getFullYear() - date.getFullYear();
-  const monthDiff = today.getMonth() - date.getMonth();
-  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < date.getDate())) {
-    years -= 1;
-  }
-  return years;
-}
-
-function defaultAgeRange(age: number | null): [number, number] {
-  if (age === null) {
-    return [AGE_MIN, Math.min(AGE_MIN + 4, AGE_MAX)];
-  }
-  const min = Math.max(AGE_MIN, age - 4);
-  const max = Math.min(AGE_MAX, age + 4);
-  return [min, Math.max(min, max)];
-}
-
-function ChipRow({
-  options,
-  selected,
-  onToggle,
-  palette,
-  borderColor,
-  importance = 'NOT_IMPORTANT',
-  importanceByTag,
-}: {
-  options: string[];
-  selected: string[];
-  onToggle: (value: string) => void;
-  palette: ImportancePalette;
-  borderColor: string;
-  importance?: Importance;
-  importanceByTag?: Record<string, Importance>;
-}) {
-  return (
-    <View style={styles.chipRow}>
-      {options.map((option) => {
-        const active = selected.includes(option);
-        const chipImportance = importanceByTag?.[option] ?? importance;
-        const importanceStyle = palette[chipImportance];
-        return (
-          <Pressable
-            key={option}
-            style={[
-              styles.chip,
-              { borderColor },
-              active && { backgroundColor: importanceStyle.bg, borderColor: importanceStyle.border },
-            ]}
-            onPress={() => onToggle(option)}
-          >
-            <ThemedText
-              style={[
-                styles.chipText,
-                active && { color: importanceStyle.text },
-              ]}
-            >
-              {formatTagLabel(option)}
-            </ThemedText>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
-function ImportanceRow({
-  value,
-  onChange,
-  palette,
-  borderColor,
-  options = IMPORTANCE_OPTIONS,
-}: {
-  value: Importance;
-  onChange: (value: Importance) => void;
-  palette: ImportancePalette;
-  borderColor: string;
-  options?: { label: string; value: Importance }[];
-}) {
-  return (
-    <View style={styles.importanceRow}>
-      {options.map((option) => {
-        const active = option.value === value;
-        const importanceStyle = palette[option.value];
-        return (
-          <Pressable
-            key={option.value}
-            style={[
-              styles.chip,
-              { borderColor },
-              active && { backgroundColor: importanceStyle.bg, borderColor: importanceStyle.border },
-            ]}
-            onPress={() => onChange(option.value)}
-          >
-            <ThemedText
-              style={[
-                styles.chipText,
-                active && { color: importanceStyle.text },
-              ]}
-            >
-              {option.label}
-            </ThemedText>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  modalOverlay: {
+  container: {
     flex: 1,
-    justifyContent: 'center',
-    padding: 20,
   },
-  modalCard: {
-    borderRadius: 16,
-    padding: 16,
-    gap: 16,
-    borderWidth: 1,
-    maxHeight: '85%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  centered: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
   },
-  content: {
-    gap: 16,
-    paddingBottom: 8,
+  scroll: {
+    padding: 20,
+    paddingBottom: 40,
+    gap: 18,
   },
-  stateBlock: {
-    gap: 8,
+  header: {
+    gap: 6,
+  },
+  mutedText: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  stateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  notice: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+  },
+  noticeText: {
+    fontSize: 13,
+    lineHeight: 18,
   },
   section: {
-    gap: 12,
+    gap: 14,
   },
   label: {
-    opacity: 0.7,
+    fontSize: 13,
+    fontWeight: '600',
   },
   helperText: {
-    fontSize: 12,
+    fontSize: 13,
+    lineHeight: 19,
   },
-  roleRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  roleRowLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  roleLabel: {
-    flex: 1,
-    fontSize: 12,
-    fontWeight: '600',
-    opacity: 0.6,
-  },
-  rolePill: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 999,
+  input: {
     borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  manualLocationBox: {
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+  },
+  manualLocationRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  manualLocationField: {
     flex: 1,
-    alignItems: 'center',
-  },
-  rolePillText: {
-    opacity: 0.7,
-    fontWeight: '600',
-    fontSize: 12,
-  },
-  rolePillTextActive: {
-    opacity: 1,
+    gap: 6,
   },
   chipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
-  },
-  chip: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
-  chipText: {
-    opacity: 0.8,
-  },
-  optionRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 10,
   },
-  optionPill: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 999,
+  chip: {
+    minHeight: 40,
     borderWidth: 1,
-  },
-  optionPillText: {
-    fontSize: 12,
-    fontWeight: '600',
-    opacity: 0.7,
-  },
-  optionPillTextActive: {
-    opacity: 1,
-  },
-  locationPill: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 999,
-    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
     justifyContent: 'center',
   },
-  locationPillText: {
-    fontSize: 12,
+  chipText: {
+    fontSize: 14,
     fontWeight: '600',
-    opacity: 0.7,
-  },
-  locationPillPressed: {
-    transform: [{ scale: 0.98 }],
-  },
-  importanceRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
   },
   ageRow: {
-    gap: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
   },
   ageValue: {
+    minWidth: 74,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    alignItems: 'center',
   },
   sliderBlock: {
     gap: 10,
@@ -1318,32 +677,55 @@ const styles = StyleSheet.create({
   sliderHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-  },
-  sliderContainer: {
-    height: 32,
+    alignItems: 'center',
   },
   sliderTrack: {
     height: 4,
-    borderRadius: 999,
   },
-  groupSection: {
-    gap: 12,
+  sliderContainer: {
+    alignSelf: 'stretch',
+    height: 40,
+  },
+  optionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  optionPill: {
+    minHeight: 40,
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 12,
+    borderRadius: 8,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    justifyContent: 'center',
   },
-  saveButton: {
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  saveButtonText: {
+  optionPillText: {
+    fontSize: 14,
     fontWeight: '600',
   },
-  muted: {
-    opacity: 0.6,
+  locationPill: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    justifyContent: 'center',
   },
-  linkText: {
-    opacity: 0.7,
+  locationPillText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  pressed: {
+    opacity: 0.82,
+  },
+  saveButton: {
+    minHeight: 48,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  saveButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

@@ -13,7 +13,6 @@ export default function PromptsLayout() {
         name="index"
         options={{
           title: 'Prompts',
-          headerBackTitleVisible: false,
           headerLeft: () => (
             <Pressable onPress={() => router.back()}>
               <ThemedText>Back</ThemedText>
@@ -25,7 +24,6 @@ export default function PromptsLayout() {
         name="[promptId]"
         options={{
           title: 'Edit prompt',
-          headerBackTitleVisible: false,
         }}
       />
     </Stack>

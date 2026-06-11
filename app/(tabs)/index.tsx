@@ -22,15 +22,26 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/lib/auth';
+import {
+  getLocallyAnsweredMatchStandardQuestionIds,
+  markMatchStandardQuestionsAnswered,
+} from '@/lib/match-standards-progress';
 import { getFacecardPhotoUrisByAccountIds } from '@/lib/facecard-photos';
 import {
   ActivePrivatePrompt,
+  MatchStandardAnswer,
+  MatchStandardAnswerPayload,
+  MatchStandardQuestion,
   fetchFacecards,
   fetchActiveMatchmakingFollowup,
   fetchActivePrivatePrompt,
+  fetchMatchStandardAnswers,
+  fetchMatchStandardQuestions,
   fetchPublicPromptFeed,
+  Importance,
   MatchCard,
   postFacecardReaction,
+  postMatchStandardAnswer,
   postMatchmakingFollowupAnswer,
   postMatchmakingFollowupChatTurn,
   postMatchmakingFollowupSkip,
@@ -49,8 +60,24 @@ type PrivatePromptChatMessage = {
 
 type PromptChannel = 'private' | 'matchmaking';
 type ReactionStrength = -3 | -2 | -1 | 0 | 1 | 2 | 3;
+type FeedMode = 'public' | 'matchStandard';
 
 const PUBLIC_REACTION_STRENGTH_OPTIONS: ReactionStrength[] = [-3, -2, -1, 0, 1, 2, 3];
+const FEED_MODES: { label: string; value: FeedMode }[] = [
+  { label: 'Prompts', value: 'public' },
+  { label: 'Standards', value: 'matchStandard' },
+];
+const MATCH_STANDARD_IMPORTANCE_OPTIONS: { label: string; value: Importance }[] = [
+  { label: 'Not important', value: 'NOT_IMPORTANT' },
+  { label: 'Nice to have', value: 'PREFERENCE' },
+  { label: 'Important', value: 'DEALBREAKER' },
+];
+const RELIGION_MATCH_STANDARD_QUESTION_ID = 'standard.religion.identity';
+const KIDS_MATCH_STANDARD_QUESTION_ID = 'standard.kids.future';
+
+type MatchStandardAnswerDraft = Omit<MatchStandardAnswerPayload, 'importance'> & {
+  importance: Importance | null;
+};
 
 const PRIVATE_PROMPT_PRIVACY_NOTE =
   'Your answers stay private and are only used for matchmaking.';
@@ -103,6 +130,74 @@ function todayKey(): string {
 
 function facecardExhaustedStorageKey(accountId: string): string {
   return `${FACECARD_EXHAUSTED_STORAGE_PREFIX}${accountId}`;
+}
+
+function formatMatchStandardCategory(category: string): string {
+  return category
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
+    .join(' ');
+}
+
+function isMatchStandardAnswerComplete(
+  payload: MatchStandardAnswerDraft | null
+): payload is MatchStandardAnswerDraft & { importance: Importance } {
+  if (!payload) return false;
+  if (!payload.ownAnswerOptionIds.length) return false;
+  if (payload.importance === null) return false;
+  if (payload.importance !== 'NOT_IMPORTANT' && !payload.acceptableAnswerOptionIds.length) {
+    return false;
+  }
+  return true;
+}
+
+function emptyMatchStandardAnswer(): MatchStandardAnswerDraft {
+  return {
+    ownAnswerOptionIds: [],
+    acceptableAnswerOptionIds: [],
+    importance: null,
+  };
+}
+
+function matchStandardAnswerFromStored(answer: MatchStandardAnswer): MatchStandardAnswerDraft {
+  return {
+    ownAnswerOptionIds: answer.ownAnswerOptionIds ?? [],
+    acceptableAnswerOptionIds: answer.acceptableAnswerOptionIds ?? [],
+    importance: answer.importance ?? null,
+  };
+}
+
+function matchStandardPayload(
+  payload: MatchStandardAnswerDraft & { importance: Importance }
+): MatchStandardAnswerPayload {
+  return {
+    ownAnswerOptionIds: payload.ownAnswerOptionIds,
+    acceptableAnswerOptionIds: payload.acceptableAnswerOptionIds,
+    importance: payload.importance,
+  };
+}
+
+function nextOwnAnswerSelection(
+  questionId: string,
+  singleChoice: boolean,
+  current: string[],
+  optionId: string
+): string[] {
+  if (singleChoice) return [optionId];
+  if (current.includes(optionId)) {
+    return current.filter((item) => item !== optionId);
+  }
+  if (questionId !== KIDS_MATCH_STANDARD_QUESTION_ID) {
+    return [...current, optionId];
+  }
+  const exclusiveGroups = [
+    ['has_kids', 'no_kids'],
+    ['wants_kids', 'open_to_kids', 'not_sure', 'doesnt_want_kids'],
+  ];
+  const group = exclusiveGroups.find((items) => items.includes(optionId));
+  if (!group) return [...current, optionId];
+  return [...current.filter((item) => !group.includes(item)), optionId];
 }
 
 function resolveFacecardPhotoUris(
@@ -288,9 +383,18 @@ export default function HomeScreen() {
   const facecardWarmupRetryCountRef = useRef(0);
   const facecardRefreshInFlightRef = useRef<Promise<void> | null>(null);
   const facecardOpenPendingRef = useRef(false);
+  const matchStandardAnsweredQuestionIdsRef = useRef<Set<string>>(new Set());
+  const matchStandardAccountIdRef = useRef<number | string | null>(null);
+  const matchStandardLoadSeqRef = useRef(0);
   const [loading, setLoading] = useState(false);
   const [card, setCard] = useState<PublicPromptFeedCard | null>(null);
+  const [feedMode, setFeedMode] = useState<FeedMode>('public');
   const [selectedReactionStrength, setSelectedReactionStrength] = useState<ReactionStrength>(0);
+  const [matchStandardQuestion, setMatchStandardQuestion] = useState<MatchStandardQuestion | null>(null);
+  const [matchStandardAnswer, setMatchStandardAnswer] = useState<MatchStandardAnswerDraft | null>(null);
+  const [matchStandardLoading, setMatchStandardLoading] = useState(false);
+  const [matchStandardSubmitting, setMatchStandardSubmitting] = useState(false);
+  const [matchStandardSkippedQuestionIds, setMatchStandardSkippedQuestionIds] = useState<string[]>([]);
   const [facecards, setFacecards] = useState<MatchCard[]>([]);
   const [, setFacecardRefetching] = useState(false);
   const [facecardsExhaustedToday, setFacecardsExhaustedToday] = useState(false);
@@ -566,8 +670,6 @@ export default function HomeScreen() {
         feedWarmupRetryTimeoutRef.current = setTimeout(() => {
           void loadCard();
         }, 900);
-      } else {
-        setMessage('Nothing new right now. Check back later.');
       }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Failed to load feed');
@@ -575,6 +677,62 @@ export default function HomeScreen() {
       setLoading(false);
     }
   }, [account, clearFeedWarmupRetry, token]);
+
+  const loadMatchStandardQuestion = useCallback(
+    async (skippedQuestionIds = matchStandardSkippedQuestionIds) => {
+      if (!account || !token) return;
+      const loadSeq = matchStandardLoadSeqRef.current + 1;
+      matchStandardLoadSeqRef.current = loadSeq;
+      setMatchStandardLoading(true);
+      try {
+        if (matchStandardAccountIdRef.current !== account.id) {
+          matchStandardAccountIdRef.current = account.id;
+          matchStandardAnsweredQuestionIdsRef.current.clear();
+        }
+        const [questions, answerSet, localAnsweredQuestionIds] = await Promise.all([
+          fetchMatchStandardQuestions(),
+          fetchMatchStandardAnswers(account.id, token),
+          getLocallyAnsweredMatchStandardQuestionIds(account.id),
+        ]);
+        if (matchStandardLoadSeqRef.current !== loadSeq) return;
+        const answersByQuestionId = new Map(
+          (answerSet.answers ?? []).map((answer) => [answer.questionId, answer])
+        );
+        localAnsweredQuestionIds.forEach((questionId) => {
+          matchStandardAnsweredQuestionIdsRef.current.add(questionId);
+        });
+        answersByQuestionId.forEach((_, questionId) => {
+          matchStandardAnsweredQuestionIdsRef.current.add(questionId);
+        });
+        const answeredIds = new Set(matchStandardAnsweredQuestionIdsRef.current);
+        const skippedIds = new Set(skippedQuestionIds);
+        let nextQuestion =
+          questions.find((question) => !answeredIds.has(question.questionId) && !skippedIds.has(question.questionId))
+          ?? null;
+        if (!nextQuestion && skippedQuestionIds.length > 0) {
+          setMatchStandardSkippedQuestionIds([]);
+          nextQuestion = questions.find((question) => !answeredIds.has(question.questionId)) ?? null;
+        }
+        setMatchStandardQuestion(nextQuestion);
+        setMatchStandardAnswer(
+          nextQuestion
+            ? answersByQuestionId.has(nextQuestion.questionId)
+              ? matchStandardAnswerFromStored(answersByQuestionId.get(nextQuestion.questionId)!)
+              : emptyMatchStandardAnswer()
+            : null
+        );
+      } catch (error) {
+        if (matchStandardLoadSeqRef.current !== loadSeq) return;
+        setMatchStandardQuestion(null);
+        setMessage(error instanceof Error ? error.message : 'Failed to load standard');
+      } finally {
+        if (matchStandardLoadSeqRef.current === loadSeq) {
+          setMatchStandardLoading(false);
+        }
+      }
+    },
+    [account, matchStandardSkippedQuestionIds, token]
+  );
 
   const scrollPrivateChatToBottom = useCallback((animated: boolean) => {
     requestAnimationFrame(() => {
@@ -585,15 +743,23 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       void loadCard();
+      void loadMatchStandardQuestion();
       facecardWarmupRetryCountRef.current = 0;
       void refreshFacecards();
       return () => {};
-    }, [loadCard, refreshFacecards])
+    }, [loadCard, loadMatchStandardQuestion, refreshFacecards])
   );
 
   useEffect(() => {
     setSelectedReactionStrength(0);
   }, [card?.answerId]);
+
+  const selectFeedMode = useCallback((mode: FeedMode) => {
+    setFeedMode(mode);
+    if (mode === 'matchStandard') {
+      void loadMatchStandardQuestion([]);
+    }
+  }, [loadMatchStandardQuestion]);
 
   useEffect(() => {
     if (!overlayOpen) return;
@@ -616,6 +782,99 @@ export default function HomeScreen() {
       setLoading(false);
     }
   }, [account, card, loadCard, refreshFacecards, selectedReactionStrength, token]);
+
+  const updateMatchStandardOwnAnswer = useCallback(
+    (optionId: string) => {
+      if (!matchStandardQuestion) return;
+      setMatchStandardAnswer((current) => {
+        const existing = current ?? emptyMatchStandardAnswer();
+        const singleChoice = matchStandardQuestion.answerType === 'SINGLE_CHOICE';
+        const nextOwn = nextOwnAnswerSelection(
+          matchStandardQuestion.questionId,
+          singleChoice,
+          existing.ownAnswerOptionIds,
+          optionId
+        );
+        const selfMatchOnly = matchStandardQuestion.questionId === RELIGION_MATCH_STANDARD_QUESTION_ID;
+        return {
+          ...existing,
+          ownAnswerOptionIds: nextOwn,
+          acceptableAnswerOptionIds: selfMatchOnly
+            && existing.importance !== null
+            && existing.importance !== 'NOT_IMPORTANT'
+            ? nextOwn
+            : existing.acceptableAnswerOptionIds,
+        };
+      });
+    },
+    [matchStandardQuestion]
+  );
+
+  const toggleMatchStandardAcceptable = useCallback((optionId: string) => {
+    setMatchStandardAnswer((current) => {
+      const existing = current ?? emptyMatchStandardAnswer();
+      const acceptable = existing.acceptableAnswerOptionIds.includes(optionId)
+        ? existing.acceptableAnswerOptionIds.filter((item) => item !== optionId)
+        : [...existing.acceptableAnswerOptionIds, optionId];
+      return {
+        ...existing,
+        acceptableAnswerOptionIds: acceptable,
+      };
+    });
+  }, []);
+
+  const setMatchStandardImportanceValue = useCallback((importance: Importance) => {
+    setMatchStandardAnswer((current) => {
+      const existing = current ?? emptyMatchStandardAnswer();
+      const selfMatchOnly = matchStandardQuestion?.questionId === RELIGION_MATCH_STANDARD_QUESTION_ID;
+      return {
+        ...existing,
+        importance,
+        acceptableAnswerOptionIds: selfMatchOnly
+          ? importance === 'NOT_IMPORTANT'
+            ? []
+            : existing.ownAnswerOptionIds
+          : existing.acceptableAnswerOptionIds,
+      };
+    });
+  }, [matchStandardQuestion?.questionId]);
+
+  const skipMatchStandardQuestion = useCallback(() => {
+    if (!matchStandardQuestion) return;
+    const nextSkipped = [...matchStandardSkippedQuestionIds, matchStandardQuestion.questionId];
+    setMatchStandardSkippedQuestionIds(nextSkipped);
+    void loadMatchStandardQuestion(nextSkipped);
+  }, [matchStandardQuestion, matchStandardSkippedQuestionIds, loadMatchStandardQuestion]);
+
+  const submitMatchStandardAnswer = useCallback(async () => {
+    if (!account || !token || !matchStandardQuestion || !isMatchStandardAnswerComplete(matchStandardAnswer)) {
+      setMessage('Complete this standard before continuing.');
+      return;
+    }
+    setMatchStandardSubmitting(true);
+    setMessage(null);
+    try {
+      await postMatchStandardAnswer(
+        account.id,
+        token,
+        matchStandardQuestion.questionId,
+        matchStandardPayload(matchStandardAnswer)
+      );
+      matchStandardAnsweredQuestionIdsRef.current.add(matchStandardQuestion.questionId);
+      await markMatchStandardQuestionsAnswered(account.id, [matchStandardQuestion.questionId]);
+      await loadMatchStandardQuestion();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Failed to save standard');
+    } finally {
+      setMatchStandardSubmitting(false);
+    }
+  }, [
+    account,
+    matchStandardAnswer,
+    matchStandardQuestion,
+    loadMatchStandardQuestion,
+    token,
+  ]);
 
   const resetFacecardsOverlay = useCallback(() => {
     Keyboard.dismiss();
@@ -935,6 +1194,10 @@ export default function HomeScreen() {
   const promptPrivatePromptExit = useCallback(() => {
     if (privatePromptSubmitting) return;
     Keyboard.dismiss();
+    if (Platform.OS === 'web') {
+      closeOverlay();
+      return;
+    }
     Alert.alert(
       'Private prompt',
       'Skip this question, or come back later?',
@@ -1002,6 +1265,32 @@ export default function HomeScreen() {
         ) : null}
       </View>
 
+      <View style={styles.feedModeRow}>
+        {FEED_MODES.map((mode) => {
+          const selected = feedMode === mode.value;
+          return (
+            <Pressable
+              key={mode.value}
+              onPress={() => selectFeedMode(mode.value)}
+              style={({ pressed }) => [
+                styles.feedModeChip,
+                {
+                  borderColor: selected ? primaryBg : cardBorder,
+                  backgroundColor: selected ? primaryBg : cardBg,
+                  opacity: pressed ? 0.75 : 1,
+                },
+              ]}
+            >
+              <ThemedText
+                style={[styles.feedModeChipText, { color: selected ? primaryText : muted }]}
+              >
+                {mode.label}
+              </ThemedText>
+            </Pressable>
+          );
+        })}
+      </View>
+
       {loading && (
         <View style={styles.stateRow}>
           <ActivityIndicator />
@@ -1015,7 +1304,7 @@ export default function HomeScreen() {
         </View>
       )}
 
-      {card ? (
+      {feedMode === 'public' && card ? (
         <View pointerEvents="box-none" style={styles.feedCenterLayer}>
           <View style={[styles.card, styles.feedCard, { borderColor: cardBorder, backgroundColor: cardBg }]}>
             <ThemedText type="defaultSemiBold">{card.promptText}</ThemedText>
@@ -1077,6 +1366,211 @@ export default function HomeScreen() {
                 <ThemedText style={[styles.actionText, { color: primaryText }]}>Next</ThemedText>
               </Pressable>
             </View>
+          </View>
+        </View>
+      ) : null}
+
+      {feedMode === 'public' && !card && !loading ? (
+        <View pointerEvents="box-none" style={styles.feedCenterLayer}>
+          <View style={[styles.card, styles.feedCard, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+            <ThemedText type="defaultSemiBold">No public prompts right now</ThemedText>
+            <ThemedText style={[styles.bodyText, { color: muted }]}>
+              Switch to Standards, answer a private prompt, or check facecards when they are available.
+            </ThemedText>
+          </View>
+        </View>
+      ) : null}
+
+      {feedMode === 'matchStandard' ? (
+        <View pointerEvents="box-none" style={styles.feedCenterLayer}>
+          <View style={[styles.card, styles.feedCard, { borderColor: cardBorder, backgroundColor: cardBg }]}>
+            {matchStandardLoading ? (
+              <View style={styles.stateRowCompact}>
+                <ActivityIndicator />
+                <ThemedText style={[styles.mutedText, { color: muted }]}>
+                  Loading question…
+                </ThemedText>
+              </View>
+            ) : matchStandardQuestion ? (
+              (() => {
+                const selfMatchOnly =
+                  matchStandardQuestion.questionId === RELIGION_MATCH_STANDARD_QUESTION_ID;
+                return (
+              <>
+                <ThemedText style={[styles.mutedText, { color: muted }]}>
+                  {formatMatchStandardCategory(matchStandardQuestion.category)}
+                </ThemedText>
+                <ThemedText type="defaultSemiBold">{matchStandardQuestion.text}</ThemedText>
+
+                <View style={styles.matchStandardBlock}>
+                  <ThemedText style={[styles.matchStandardLabel, { color: muted }]}>
+                    My answer
+                  </ThemedText>
+                  <View style={styles.optionRow}>
+                    {matchStandardQuestion.options.map((option) => (
+                      <Pressable
+                        key={option.optionId}
+                        onPress={() => updateMatchStandardOwnAnswer(option.optionId)}
+                        disabled={matchStandardSubmitting}
+                        style={({ pressed }) => [
+                          styles.optionChip,
+                          {
+                            borderColor: matchStandardAnswer?.ownAnswerOptionIds.includes(option.optionId)
+                              ? primaryBg
+                              : cardBorder,
+                            backgroundColor: matchStandardAnswer?.ownAnswerOptionIds.includes(option.optionId)
+                              ? primaryBg
+                              : 'transparent',
+                            opacity: pressed || matchStandardSubmitting ? 0.72 : 1,
+                          },
+                        ]}
+                      >
+                        <ThemedText
+                          style={[
+                            styles.optionChipText,
+                            {
+                              color: matchStandardAnswer?.ownAnswerOptionIds.includes(option.optionId)
+                                ? primaryText
+                                : muted,
+                            },
+                          ]}
+                        >
+                          {option.text}
+                        </ThemedText>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+
+                {!selfMatchOnly ? (
+                  <View style={styles.matchStandardBlock}>
+                    <ThemedText style={[styles.matchStandardLabel, { color: muted }]}>
+                      Partner answers that work for me
+                    </ThemedText>
+                    <View style={styles.optionRow}>
+                      {matchStandardQuestion.options.map((option) => {
+                        const isAccepted = Boolean(
+                          matchStandardAnswer?.acceptableAnswerOptionIds.includes(option.optionId)
+                        );
+                        return (
+                          <Pressable
+                            key={`acceptable-${option.optionId}`}
+                            onPress={() => toggleMatchStandardAcceptable(option.optionId)}
+                            disabled={matchStandardSubmitting}
+                            style={({ pressed }) => [
+                              styles.optionChip,
+                              {
+                                borderColor: isAccepted ? primaryBg : cardBorder,
+                                backgroundColor: isAccepted ? primaryBg : 'transparent',
+                                opacity: pressed || matchStandardSubmitting ? 0.72 : 1,
+                              },
+                            ]}
+                          >
+                            <ThemedText
+                              style={[
+                                styles.optionChipText,
+                                { color: isAccepted ? primaryText : muted },
+                              ]}
+                            >
+                              {option.text}
+                            </ThemedText>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </View>
+                ) : null}
+
+                <View style={styles.matchStandardBlock}>
+                  <ThemedText style={[styles.matchStandardLabel, { color: muted }]}>
+                    {selfMatchOnly ? 'Should my partner share this?' : 'How much this matters'}
+                  </ThemedText>
+                  <View style={styles.optionRow}>
+                    {MATCH_STANDARD_IMPORTANCE_OPTIONS.map((option) => {
+                      const selectedImportance = matchStandardAnswer?.importance ?? null;
+                      const isSelected = selectedImportance === option.value;
+                      return (
+                        <Pressable
+                          key={option.value}
+                          onPress={() => setMatchStandardImportanceValue(option.value)}
+                          disabled={matchStandardSubmitting}
+                          style={({ pressed }) => [
+                            styles.optionChip,
+                            {
+                              borderColor: isSelected ? primaryBg : cardBorder,
+                              backgroundColor: isSelected ? primaryBg : 'transparent',
+                              opacity: pressed || matchStandardSubmitting ? 0.72 : 1,
+                            },
+                          ]}
+                        >
+                          <ThemedText
+                            style={[
+                              styles.optionChipText,
+                              { color: isSelected ? primaryText : muted },
+                            ]}
+                          >
+                            {option.label}
+                          </ThemedText>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  {!selfMatchOnly
+                    && matchStandardAnswer?.importance !== null
+                    && matchStandardAnswer?.importance !== 'NOT_IMPORTANT'
+                    && (matchStandardAnswer?.acceptableAnswerOptionIds.length ?? 0) === 0 ? (
+                    <ThemedText style={[styles.mutedText, { color: muted }]}>
+                      Pick at least one partner answer that works for you.
+                    </ThemedText>
+                  ) : null}
+                </View>
+
+                <View style={styles.actionsRow}>
+                  <Pressable
+                    onPress={skipMatchStandardQuestion}
+                    disabled={matchStandardSubmitting}
+                    style={({ pressed }) => [
+                      styles.actionButton,
+                      {
+                        borderColor: cardBorder,
+                        backgroundColor: 'transparent',
+                        opacity: pressed || matchStandardSubmitting ? 0.55 : 1,
+                      },
+                    ]}
+                  >
+                    <ThemedText style={[styles.actionText, { color: muted }]}>Skip</ThemedText>
+                  </Pressable>
+                  <Pressable
+                    onPress={submitMatchStandardAnswer}
+                    disabled={matchStandardSubmitting || !isMatchStandardAnswerComplete(matchStandardAnswer)}
+                    style={({ pressed }) => [
+                      styles.actionButton,
+                      {
+                        borderColor: primaryBg,
+                        backgroundColor: primaryBg,
+                        opacity:
+                          pressed || matchStandardSubmitting || !isMatchStandardAnswerComplete(matchStandardAnswer)
+                            ? 0.55
+                            : 1,
+                      },
+                    ]}
+                  >
+                    <ThemedText style={[styles.actionText, { color: primaryText }]}>
+                      {matchStandardSubmitting ? 'Saving…' : 'Next'}
+                    </ThemedText>
+                  </Pressable>
+                </View>
+              </>
+                );
+              })()
+            ) : (
+              <>
+                <ThemedText type="defaultSemiBold">You&apos;re caught up</ThemedText>
+                <ThemedText style={[styles.bodyText, { color: muted }]}>
+                  New standards can be added without changing your public profile.
+                </ThemedText>
+              </>
+            )}
           </View>
         </View>
       ) : null}
@@ -1366,12 +1860,35 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  feedModeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 10,
+    zIndex: 2,
+  },
+  feedModeChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+  },
+  feedModeChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
   stateRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     marginTop: 14,
     zIndex: 2,
+  },
+  stateRowCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   notice: {
     padding: 12,
@@ -1405,6 +1922,29 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginTop: 8,
+  },
+  matchStandardBlock: {
+    gap: 8,
+  },
+  matchStandardLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    opacity: 0.72,
+  },
+  optionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  optionChip: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+  },
+  optionChipText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   reactionPicker: {
     marginTop: 8,
@@ -1451,6 +1991,7 @@ const styles = StyleSheet.create({
   },
   overlayDismissLayer: {
     ...StyleSheet.absoluteFillObject,
+    zIndex: 0,
   },
   overlayCard: {
     borderWidth: 1,
@@ -1463,6 +2004,7 @@ const styles = StyleSheet.create({
   },
   privateOverlayCard: {
     flex: 1,
+    zIndex: 1,
     borderWidth: 1,
     borderRadius: 0,
     paddingHorizontal: 16,
